@@ -1,53 +1,24 @@
-import json
-import time
 import tracemalloc
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
 import psutil
 from goatlib.routing.adapters.motis import create_motis_adapter
 from goatlib.routing.schemas.ab_routing import ABRoutingRequest, ABRoutingResponse
-from goatlib.routing.schemas.base import Location, Mode
+from goatlib.routing.schemas.base import Coordinates, Mode
+
+from .conftest import BenchmarkMetrics, save_benchmark_results
 
 
-class ABRoutingPerformanceMetrics:
+class ABRoutingBenchmarkMetrics(BenchmarkMetrics):
     """Class to track AB routing performance metrics during test execution."""
 
-    def __init__(self: "ABRoutingPerformanceMetrics") -> None:
-        self.reset()
-
-    def reset(self: "ABRoutingPerformanceMetrics") -> None:
-        """Reset all metrics."""
-        self.timings = {}
-        self.memory_usage = {}
-        self.network_stats = {}
-        self.response_stats = {}
-        self.validation_stats = {}
-
-    def start_timing(self: "ABRoutingPerformanceMetrics", phase: str) -> None:
-        """Start timing a specific phase."""
-        self.timings[f"{phase}_start"] = time.perf_counter()
-
-    def end_timing(self: "ABRoutingPerformanceMetrics", phase: str) -> None:
-        """End timing a specific phase and calculate duration."""
-        end_time = time.perf_counter()
-        start_time = self.timings.get(f"{phase}_start", end_time)
-        self.timings[f"{phase}_duration"] = end_time - start_time
-
-    def record_memory(self: "ABRoutingPerformanceMetrics", phase: str) -> None:
-        """Record memory usage at a specific phase."""
-        current, peak = tracemalloc.get_traced_memory()
-        self.memory_usage[phase] = {
-            "current_mb": current / 1024 / 1024,
-            "peak_mb": peak / 1024 / 1024,
-            "process_rss_mb": psutil.Process().memory_info().rss / 1024 / 1024,
-        }
+    def __init__(self) -> None:
+        super().__init__()
+        self.validation_stats: Dict[str, Any] = {}
 
     def record_response_stats(
-        self: "ABRoutingPerformanceMetrics",
-        response: ABRoutingResponse,
-        request: ABRoutingRequest,
+        self, response: ABRoutingResponse, request: ABRoutingRequest
     ) -> None:
         """Record AB routing response statistics."""
         route_count = len(response.routes)
@@ -64,13 +35,13 @@ class ABRoutingPerformanceMetrics:
         for route in response.routes:
             for leg in route.legs:
                 modes_used.add(leg.mode.value)
-                if leg.mode == Mode.WALK:
+                if leg.mode == Mode.walk:
                     walking_legs += 1
                 else:
                     transit_legs += 1
             # Count transfers (transitions between transit modes)
             transit_modes_in_route = [
-                leg.mode for leg in route.legs if leg.mode != Mode.WALK
+                leg.mode for leg in route.legs if leg.mode != Mode.walk
             ]
             if len(transit_modes_in_route) > 1:
                 transfer_count += len(transit_modes_in_route) - 1
@@ -95,9 +66,7 @@ class ABRoutingPerformanceMetrics:
             "transport_modes_requested": [mode.value for mode in request.modes],
         }
 
-    def record_validation_stats(
-        self: "ABRoutingPerformanceMetrics", response: ABRoutingResponse
-    ) -> None:
+    def record_validation_stats(self, response: ABRoutingResponse) -> None:
         """Record comprehensive plausibility validation statistics."""
         from goatlib.routing.utils.ab_route_validator import (
             validate_route_response,
@@ -166,32 +135,9 @@ class ABRoutingPerformanceMetrics:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert metrics to dictionary."""
-        return {
-            "timings": self.timings,
-            "memory_usage": self.memory_usage,
-            "network_stats": self.network_stats,
-            "response_stats": self.response_stats,
-            "validation_stats": self.validation_stats,
-            "timestamp": datetime.now().isoformat(),
-        }
-
-
-def save_ab_routing_benchmark_results(
-    metrics: ABRoutingPerformanceMetrics, test_name: str
-) -> Path:
-    """Save AB routing benchmark results to JSON file."""
-    benchmark_dir = Path(__file__).parent / "results"
-    benchmark_dir.mkdir(exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{test_name}_{timestamp}.json"
-    filepath = benchmark_dir / filename
-
-    with open(filepath, "w") as f:
-        json.dump(metrics.to_dict(), f, indent=2)
-
-    print(f"\n📊 AB Routing benchmark results saved to: {filepath}")
-    return filepath
+        base_dict = super().to_dict()
+        base_dict["validation_stats"] = self.validation_stats
+        return base_dict
 
 
 def validate_ab_routing_response(response: ABRoutingResponse) -> None:
@@ -229,11 +175,11 @@ async def test_motis_ab_routing_performance_benchmark():
     - Pre-request preparation time
     - Network request time
     - Post-processing time
-    - Memory allocation
+    - Memory alCoordinates
     - Response data analysis
     - Route validation performance
     """
-    metrics = ABRoutingPerformanceMetrics()
+    metrics = ABRoutingBenchmarkMetrics()
 
     # Start memory tracing
     tracemalloc.start()
@@ -248,9 +194,11 @@ async def test_motis_ab_routing_performance_benchmark():
 
         # Create comprehensive routing request (Munich to Stuttgart - major city pair)
         request = ABRoutingRequest(
-            origin=Location(lat=48.1351, lon=11.5820),  # Munich central station
-            destination=Location(lat=48.7758, lon=9.1829),  # Stuttgart central station
-            modes=[Mode.TRANSIT, Mode.WALK],  # Allow transfers and walking
+            origin=Coordinates(lat=48.1351, lon=11.5820),  # Munich central station
+            destination=Coordinates(
+                lat=48.7758, lon=9.1829
+            ),  # Stuttgart central station
+            modes=[Mode.transit, Mode.walk],  # Allow transfers and walking
             max_results=5,  # Request multiple alternatives
             max_transfers=3,  # Allow up to 3 transfers for complex routes
             max_walking_distance=1000,  # 1km max walking distance
@@ -295,8 +243,8 @@ async def test_motis_ab_routing_performance_benchmark():
         # Detailed route analysis (typical use case processing)
         for route in response.routes:
             # Analyze route characteristics
-            transit_legs = [leg for leg in route.legs if leg.mode != Mode.WALK]
-            walking_legs = [leg for leg in route.legs if leg.mode == Mode.WALK]
+            transit_legs = [leg for leg in route.legs if leg.mode != Mode.walk]
+            walking_legs = [leg for leg in route.legs if leg.mode == Mode.walk]
 
             # Validate route connectivity
             for i in range(len(route.legs) - 1):
@@ -316,9 +264,7 @@ async def test_motis_ab_routing_performance_benchmark():
         metrics.end_timing("validation")
 
         # === SAVE RESULTS ===
-        filepath = save_ab_routing_benchmark_results(
-            metrics, "motis_ab_routing_performance"
-        )
+        filepath = save_benchmark_results(metrics, "motis_ab_routing_performance")
 
         # === PRINT DETAILED SUMMARY ===
         print("\n🚀 MOTIS AB Routing Performance Benchmark Results:")
@@ -415,7 +361,7 @@ async def test_motis_ab_routing_minimal_benchmark():
     Minimal benchmark for quick AB routing performance checks.
     Tests short-distance urban routing scenario.
     """
-    metrics = ABRoutingPerformanceMetrics()
+    metrics = ABRoutingBenchmarkMetrics()
     tracemalloc.start()
 
     try:
@@ -426,9 +372,9 @@ async def test_motis_ab_routing_minimal_benchmark():
 
         # Berlin local routing (Alexanderplatz to Brandenburg Gate)
         request = ABRoutingRequest(
-            origin=Location(lat=52.5219, lon=13.4132),  # Alexanderplatz
-            destination=Location(lat=52.5163, lon=13.3777),  # Brandenburg Gate
-            modes=[Mode.TRANSIT, Mode.WALK],
+            origin=Coordinates(lat=52.5219, lon=13.4132),  # Alexanderplatz
+            destination=Coordinates(lat=52.5163, lon=13.3777),  # Brandenburg Gate
+            modes=[Mode.transit, Mode.walk],
             max_results=2,  # Minimal results for fast response
             max_transfers=1,  # Single transfer max
         )
@@ -441,7 +387,7 @@ async def test_motis_ab_routing_minimal_benchmark():
         metrics.record_validation_stats(response)
 
         # Save minimal results
-        save_ab_routing_benchmark_results(metrics, "motis_ab_routing_minimal")
+        save_benchmark_results(metrics, "motis_ab_routing_minimal")
 
         print("\n⚡ Minimal AB Routing Benchmark:")
         print(f"   Total time:      {metrics.timings.get('total_duration', 0):.3f}s")
@@ -474,7 +420,7 @@ async def test_motis_ab_routing_stress_benchmark():
     Stress test benchmark for AB routing with challenging parameters.
     Tests maximum complexity routing scenario.
     """
-    metrics = ABRoutingPerformanceMetrics()
+    metrics = ABRoutingBenchmarkMetrics()
     tracemalloc.start()
 
     try:
@@ -485,9 +431,9 @@ async def test_motis_ab_routing_stress_benchmark():
 
         # Long-distance routing with maximum complexity (Berlin to Munich)
         request = ABRoutingRequest(
-            origin=Location(lat=52.5200, lon=13.4050),  # Berlin
-            destination=Location(lat=48.1351, lon=11.5820),  # Munich
-            modes=[Mode.TRANSIT, Mode.WALK],
+            origin=Coordinates(lat=52.5200, lon=13.4050),  # Berlin
+            destination=Coordinates(lat=48.1351, lon=11.5820),  # Munich
+            modes=[Mode.transit, Mode.walk],
             max_results=10,  # Maximum results
             max_transfers=5,  # Allow many transfers
             max_walking_distance=2000,  # Longer walking distance
@@ -501,7 +447,7 @@ async def test_motis_ab_routing_stress_benchmark():
         metrics.record_validation_stats(response)
 
         # Save stress test results
-        save_ab_routing_benchmark_results(metrics, "motis_ab_routing_stress")
+        save_benchmark_results(metrics, "motis_ab_routing_stress")
 
         print("\n🔥 Stress Test AB Routing Benchmark:")
         print(f"   Total time:      {metrics.timings.get('total_duration', 0):.3f}s")

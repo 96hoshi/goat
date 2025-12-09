@@ -9,17 +9,14 @@ from goatlib.routing.adapters.motis.motis_converters import (
     parse_motis_one_to_all_response,
     translate_to_motis_one_to_all_request,
 )
+from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingModePT
 from goatlib.routing.schemas.catchment_area_transit import (
-    AccessEgressMode,
-    CatchmentAreaRoutingModePT,
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
-    TransitCatchmentAreaTravelTimeCost,
     TransitRoutingSettings,
+    TravelTimeCost,
 )
 
-# Set up logging to see detailed output
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -133,8 +130,8 @@ class MotisOneToAllPlausibilityTester:
             # Create test request
             request = TransitCatchmentAreaRequest(
                 starting_points=TransitCatchmentAreaStartingPoints(
-                    latitude=[48.1351],
-                    longitude=[11.5820],
+                    lat=[48.1351],
+                    lon=[11.5820],
                 ),
                 transit_modes=[
                     CatchmentAreaRoutingModePT.bus,
@@ -142,7 +139,7 @@ class MotisOneToAllPlausibilityTester:
                 ],
                 access_mode=AccessEgressMode.walk,
                 egress_mode=AccessEgressMode.walk,
-                travel_cost=TransitCatchmentAreaTravelTimeCost(
+                travel_cost=TravelTimeCost(
                     max_traveltime=30,
                     cutoffs=[10, 20, 30],
                 ),
@@ -191,8 +188,8 @@ class MotisOneToAllPlausibilityTester:
                 "test_location": "Munich, Germany",
                 "request_params": {
                     "starting_point": [
-                        request.starting_points.latitude[0],
-                        request.starting_points.longitude[0],
+                        request.starting_points.lat[0],
+                        request.starting_points.lon[0],
                     ],
                     "transit_modes": [mode.value for mode in request.transit_modes],
                     "max_travel_time": request.travel_cost.max_traveltime,
@@ -252,8 +249,8 @@ def sample_request():
     """Fixture providing a sample transit catchment area request."""
     return TransitCatchmentAreaRequest(
         starting_points=TransitCatchmentAreaStartingPoints(
-            latitude=[48.1351],
-            longitude=[11.5820],  # Munich city center
+            lat=[48.1351],
+            lon=[11.5820],  # Munich city center
         ),
         transit_modes=[
             CatchmentAreaRoutingModePT.bus,
@@ -261,7 +258,7 @@ def sample_request():
         ],
         access_mode=AccessEgressMode.walk,
         egress_mode=AccessEgressMode.walk,
-        travel_cost=TransitCatchmentAreaTravelTimeCost(
+        travel_cost=TravelTimeCost(
             max_traveltime=30,
             cutoffs=[10, 20, 30],
         ),
@@ -277,11 +274,11 @@ async def test_motis_one_to_all_raw_response_validation(plausibility_tester):
     try:
         request = TransitCatchmentAreaRequest(
             starting_points=TransitCatchmentAreaStartingPoints(
-                latitude=[48.1351],
-                longitude=[11.5820],
+                lat=[48.1351],
+                lon=[11.5820],
             ),
             transit_modes=[CatchmentAreaRoutingModePT.bus],
-            travel_cost=TransitCatchmentAreaTravelTimeCost(
+            travel_cost=TravelTimeCost(
                 max_traveltime=20,
                 cutoffs=[10, 20],
             ),

@@ -1,52 +1,19 @@
-import json
-import time
 import tracemalloc
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict
 
 import psutil
 from goatlib.routing.adapters.motis import create_motis_adapter
+from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingModePT
 from goatlib.routing.schemas.catchment_area_transit import (
-    AccessEgressMode,
-    CatchmentAreaRoutingModePT,
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
-    TransitCatchmentAreaTravelTimeCost,
+    TravelTimeCost,
 )
 
+from .conftest import BenchmarkMetrics, save_benchmark_results
 
-class PerformanceMetrics:
-    """Class to track performance metrics during test execution."""
 
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        """Reset all metrics."""
-        self.timings = {}
-        self.memory_usage = {}
-        self.network_stats = {}
-        self.response_stats = {}
-
-    def start_timing(self, phase: str):
-        """Start timing a specific phase."""
-        self.timings[f"{phase}_start"] = time.perf_counter()
-
-    def end_timing(self, phase: str):
-        """End timing a specific phase and calculate duration."""
-        end_time = time.perf_counter()
-        start_time = self.timings.get(f"{phase}_start", end_time)
-        self.timings[f"{phase}_duration"] = end_time - start_time
-
-    def record_memory(self, phase: str):
-        """Record memory usage at a specific phase."""
-        current, peak = tracemalloc.get_traced_memory()
-        self.memory_usage[phase] = {
-            "current_mb": current / 1024 / 1024,
-            "peak_mb": peak / 1024 / 1024,
-            "process_rss_mb": psutil.Process().memory_info().rss / 1024 / 1024,
-        }
+class OneToAllBenchmarkMetrics(BenchmarkMetrics):
+    """Class to track one-to-all performance metrics during test execution."""
 
     def record_response_stats(self, response, request):
         """Record response statistics."""
@@ -68,32 +35,6 @@ class PerformanceMetrics:
             "transit_modes": len(request.transit_modes),
         }
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert metrics to dictionary."""
-        return {
-            "timings": self.timings,
-            "memory_usage": self.memory_usage,
-            "network_stats": self.network_stats,
-            "response_stats": self.response_stats,
-            "timestamp": datetime.now().isoformat(),
-        }
-
-
-def save_benchmark_results(metrics: PerformanceMetrics, test_name: str):
-    """Save benchmark results to JSON file."""
-    benchmark_dir = Path(__file__).parent / "results"
-    benchmark_dir.mkdir(exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{test_name}_{timestamp}.json"
-    filepath = benchmark_dir / filename
-
-    with open(filepath, "w") as f:
-        json.dump(metrics.to_dict(), f, indent=2)
-
-    print(f"\n📊 Benchmark results saved to: {filepath}")
-    return filepath
-
 
 async def test_motis_one_to_all_performance_benchmark():
     """
@@ -106,7 +47,7 @@ async def test_motis_one_to_all_performance_benchmark():
     - Memory allocation
     - Response data size
     """
-    metrics = PerformanceMetrics()
+    metrics = OneToAllBenchmarkMetrics()
 
     # Start memory tracing
     tracemalloc.start()
@@ -120,11 +61,12 @@ async def test_motis_one_to_all_performance_benchmark():
         adapter = create_motis_adapter(use_fixtures=False)
 
         # Create request (Berlin with multiple cutoffs for substantial response)
+        starting_points = TransitCatchmentAreaStartingPoints(
+            lat=[52.5200],
+            lon=[13.4050],  # Berlin center
+        )
         request = TransitCatchmentAreaRequest(
-            starting_points=TransitCatchmentAreaStartingPoints(
-                latitude=[52.5200],  # Berlin center
-                longitude=[13.4050],
-            ),
+            starting_points=starting_points,
             transit_modes=[
                 CatchmentAreaRoutingModePT.bus,
                 CatchmentAreaRoutingModePT.tram,
@@ -133,7 +75,7 @@ async def test_motis_one_to_all_performance_benchmark():
             ],
             access_mode=AccessEgressMode.walk,
             egress_mode=AccessEgressMode.walk,
-            travel_cost=TransitCatchmentAreaTravelTimeCost(
+            travel_cost=TravelTimeCost(
                 max_traveltime=45,
                 cutoffs=[15, 30, 45],  # Multiple cutoffs for larger response
             ),
@@ -251,7 +193,7 @@ async def test_motis_one_to_all_minimal_benchmark():
     """
     Minimal benchmark for quick performance checks.
     """
-    metrics = PerformanceMetrics()
+    metrics = OneToAllBenchmarkMetrics()
     tracemalloc.start()
 
     try:
@@ -262,13 +204,12 @@ async def test_motis_one_to_all_minimal_benchmark():
 
         request = TransitCatchmentAreaRequest(
             starting_points=TransitCatchmentAreaStartingPoints(
-                latitude=[52.5200],
-                longitude=[13.4050],
+                lat=[52.5200], lon=[13.4050]
             ),
             transit_modes=[CatchmentAreaRoutingModePT.subway],
             access_mode=AccessEgressMode.walk,
             egress_mode=AccessEgressMode.walk,
-            travel_cost=TransitCatchmentAreaTravelTimeCost(
+            travel_cost=TravelTimeCost(
                 max_traveltime=15,
                 cutoffs=[15],
             ),
