@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from goatlib.routing.schemas.ab_routing import ABLeg, ABRoute
-from goatlib.routing.schemas.base import Location, Mode
+from goatlib.routing.schemas.base import Coordinates, Mode
 from goatlib.routing.utils.ab_route_validator import (
     validate_route_response,
     validate_single_route,
@@ -10,14 +10,14 @@ from goatlib.routing.utils.ab_route_validator import (
 
 def create_sample_route() -> ABRoute:
     """Create a sample route for testing."""
-    origin = Location(lat=48.1351, lon=11.5820)  # Munich center
-    destination = Location(lat=48.1482, lon=11.5680)  # Munich north
+    origin = Coordinates(lat=48.1351, lon=11.5820)  # Munich center
+    destination = Coordinates(lat=48.1482, lon=11.5680)  # Munich north
 
     # Walking leg
     walk_leg = ABLeg(
         origin=origin,
-        destination=Location(lat=48.1360, lon=11.5810),  # Short walk to transit
-        mode=Mode.WALK,
+        destination=Coordinates(lat=48.1360, lon=11.5810),  # Short walk to transit
+        mode=Mode.walk,
         departure_time=datetime(2025, 12, 15, 9, 0, 0, tzinfo=timezone.utc),
         arrival_time=datetime(2025, 12, 15, 9, 5, 0, tzinfo=timezone.utc),
         duration=300,  # 5 minutes
@@ -26,9 +26,9 @@ def create_sample_route() -> ABRoute:
 
     # Transit leg
     transit_leg = ABLeg(
-        origin=Location(lat=48.1360, lon=11.5810),
-        destination=Location(lat=48.1480, lon=11.5675),
-        mode=Mode.SUBWAY,
+        origin=Coordinates(lat=48.1360, lon=11.5810),
+        destination=Coordinates(lat=48.1480, lon=11.5675),
+        mode=Mode.subway,
         departure_time=datetime(2025, 12, 15, 9, 8, 0, tzinfo=timezone.utc),
         arrival_time=datetime(2025, 12, 15, 9, 15, 0, tzinfo=timezone.utc),
         duration=420,  # 7 minutes
@@ -37,9 +37,9 @@ def create_sample_route() -> ABRoute:
 
     # Final walking leg
     final_walk = ABLeg(
-        origin=Location(lat=48.1480, lon=11.5675),
+        origin=Coordinates(lat=48.1480, lon=11.5675),
         destination=destination,
-        mode=Mode.WALK,
+        mode=Mode.walk,
         departure_time=datetime(2025, 12, 15, 9, 15, 0, tzinfo=timezone.utc),
         arrival_time=datetime(2025, 12, 15, 9, 18, 0, tzinfo=timezone.utc),
         duration=180,  # 3 minutes
@@ -61,14 +61,14 @@ def create_sample_route() -> ABRoute:
 
 def create_problematic_route() -> ABRoute:
     """Create a route with plausibility issues for testing."""
-    origin = Location(lat=48.1351, lon=11.5820)
-    destination = Location(lat=48.2000, lon=11.6000)  # Much further
+    origin = Coordinates(lat=48.1351, lon=11.5820)
+    destination = Coordinates(lat=48.2000, lon=11.6000)  # Much further
 
     # Impossibly fast walking
     bad_walk = ABLeg(
         origin=origin,
         destination=destination,
-        mode=Mode.WALK,
+        mode=Mode.walk,
         departure_time=datetime(2025, 12, 15, 9, 0, 0, tzinfo=timezone.utc),
         arrival_time=datetime(2025, 12, 15, 9, 5, 0, tzinfo=timezone.utc),
         duration=300,  # 5 minutes

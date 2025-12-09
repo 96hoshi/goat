@@ -1,86 +1,55 @@
-from typing import Any, Optional, Self
+from typing import Any, Literal, Optional, Self, Union
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from routing.core.config import settings
 
+from goatlib.routing.config import routing_settings
 from goatlib.routing.schemas.base import (
     CatchmentAreaRoutingTypeActiveMobility,
     CatchmentAreaRoutingTypeCar,
-    CatchmentAreaStartingPoints,
     CatchmentAreaType,
+    Coordinates,
 )
 
 
-class _BaseTravelTimeCost(BaseModel):
-    """Internal base schema for travel time cost."""
+class TravelTimeCost(BaseModel):
+    """Travel time-based cost schema."""
 
-    max_traveltime: int
-
+    cost_type: Literal["time"] = "time"
+    max_traveltime: int = Field(
+        ...,
+        title="Max Travel Time",
+        description="The maximum travel time in minutes.",
+        ge=1,
+    )
     steps: int = Field(
         ...,
         title="Steps",
         description="The number of steps.",
     )
+    speed: Optional[int] = Field(
+        None,
+        title="Speed",
+        description="The speed in km/h.",
+        ge=1,
+    )
 
-    # This validator is now generic
     @field_validator("steps")
     @classmethod
-    def valid_num_steps(cls, v: int) -> int:
-        """
-        Validate that the number of steps does not exceed the `le` constraint
-        defined on the `max_traveltime` field for this specific model.
-        """
-        # Dynamically get the 'le' value from the max_traveltime field definition
-        max_traveltime_limit = cls.model_fields["max_traveltime"].le
-
-        if max_traveltime_limit is None:
-            # Failsafe in case 'le' is not set on the field
-            return v
-
-        if v > max_traveltime_limit:
+    def validate_steps(cls, v: int, info) -> int:
+        """Validate steps don't exceed max_traveltime."""
+        max_traveltime = info.data.get("max_traveltime")
+        if max_traveltime and v > max_traveltime:
             raise ValueError(
-                f"The number of steps ({v}) must not exceed the maximum travel time ({max_traveltime_limit})."
+                f"Steps ({v}) cannot exceed max travel time ({max_traveltime})."
             )
         return v
 
 
-class CatchmentAreaTravelTimeCostActiveMobility(_BaseTravelTimeCost):
-    """Travel time cost schema for active mobility."""
+class TravelDistanceCost(BaseModel):
+    """Travel distance-based cost schema."""
 
-    max_traveltime: int = Field(
-        ...,
-        title="Max Travel Time",
-        description="The maximum travel time in minutes.",
-        ge=1,
-        le=45,
-    )
-
-    speed: int = Field(
-        ...,
-        title="Speed",
-        description="The speed in km/h.",
-        ge=1,
-        le=25,
-    )
-
-
-class CatchmentAreaTravelTimeCostMotorizedMobility(_BaseTravelTimeCost):
-    """Travel time cost schema for motorized mobility."""
-
-    max_traveltime: int = Field(
-        ...,
-        title="Max Travel Time",
-        description="The maximum travel time in minutes.",
-        ge=1,
-        le=90,
-    )
-
-
-# TODO: Check how to treat miles
-class CatchmentAreaTravelDistanceCost(BaseModel):
-    """Travel distance cost schema, applicable to any mobility type."""
-
+    cost_type: Literal["distance"] = "distance"
     max_distance: int = Field(
         ...,
         title="Max Distance",
@@ -96,30 +65,22 @@ class CatchmentAreaTravelDistanceCost(BaseModel):
 
     @field_validator("steps")
     @classmethod
-    def valid_num_steps(cls, v: int) -> int:
-        """
-        Validate that the number of steps does not exceed the `le` constraint
-        defined on the `max_distance` field.
-        """
-        max_distance_limit = cls.model_fields["max_distance"].le
-
-        if max_distance_limit is None:
-            return v  # Failsafe
-
-        if v > max_distance_limit:
+    def validate_steps(cls, v: int, info) -> int:
+        """Validate steps don't exceed max_distance."""
+        max_distance = info.data.get("max_distance")
+        if max_distance and v > max_distance:
             raise ValueError(
-                f"The number of steps ({v}) must not exceed the maximum distance ({max_distance_limit})."
+                f"Steps ({v}) cannot exceed max distance ({max_distance})."
             )
         return v
 
 
+# Union type for travel costs
+TravelCost = Union[TravelTimeCost, TravelDistanceCost]
+
+
 class CatchmentAreaStreetNetwork(BaseModel):
-    def __init__(self, **data: Any) -> None:
-        super().__init__(**data)
-        if self.node_layer_project_id is None:
-            self.node_layer_project_id = (
-                settings.DEFAULT_STREET_NETWORK_NODE_LAYER_PROJECT_ID
-            )
+    """Street network configuration for catchment area analysis."""
 
     edge_layer_project_id: int = Field(
         ...,
@@ -132,101 +93,126 @@ class CatchmentAreaStreetNetwork(BaseModel):
         description="The layer project ID of the street network node layer.",
     )
 
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
+        if self.node_layer_project_id is None:
+            self.node_layer_project_id = (
+                routing_settings.default_street_network_node_layer_project_id
+            )
 
-class _BaseICatchmentArea(BaseModel):
-    """Internal base model for all catchment area requests."""
 
-    starting_points: CatchmentAreaStartingPoints = Field(
+class CatchmentAreaRequest(BaseModel):
+    """Unified catchment area request model."""
+
+    starting_points: list[Coordinates] = Field(
         ...,
         title="Starting Points",
         description="The starting points of the catchment area.",
     )
-    scenario_id: UUID | None = Field(
-        None,
-        title="Scenario ID",
-        description="The ID of the scenario that is to be applied on the base network.",
+    routing_type: Union[
+        CatchmentAreaRoutingTypeActiveMobility, CatchmentAreaRoutingTypeCar
+    ] = Field(
+        ..., title="Routing Type", description="The routing type of the catchment area."
     )
-    street_network: CatchmentAreaStreetNetwork | None = Field(
-        None,
-        title="Street Network Layer Config",
-        description="The configuration of the street network layers to use.",
+    travel_cost: TravelCost = Field(
+        ..., title="Travel Cost", description="The travel cost configuration."
     )
     catchment_area_type: CatchmentAreaType = Field(
         ..., title="Return Type", description="The return type of the catchment area."
-    )
-    polygon_difference: bool | None = Field(
-        None,
-        title="Polygon Difference",
-        description="If true, the polygons returned will be the geometrical difference of two following calculations.",
     )
     result_table: str = Field(
         ...,
         title="Result Table",
         description="The table name the results should be saved.",
     )
-    layer_id: UUID | None = Field(
+    layer_id: UUID = Field(
         ...,
         title="Layer ID",
         description="The ID of the layer the results should be saved.",
     )
-
-    routing_type: str
-    travel_cost: Any
+    scenario_id: Optional[UUID] = Field(
+        None,
+        title="Scenario ID",
+        description="The ID of the scenario that is to be applied on the base network.",
+    )
+    street_network: Optional[CatchmentAreaStreetNetwork] = Field(
+        None,
+        title="Street Network Layer Config",
+        description="The configuration of the street network layers to use.",
+    )
+    polygon_difference: Optional[bool] = Field(
+        None,
+        title="Polygon Difference",
+        description="If true, the polygons returned will be the geometrical difference of two following calculations.",
+    )
 
     @model_validator(mode="after")
-    def _model_validator(self) -> Self:
-        scenario_id = self.scenario_id
-        street_network = self.street_network
-        polygon_difference = self.polygon_difference
-        catchment_area_type = self.catchment_area_type
-        # Ensure street network is specified if a scenario ID is provided
-        if scenario_id is not None and street_network is None:
+    def validate_configuration(self) -> Self:
+        """Validate the overall configuration consistency."""
+        # Validate scenario + street network relationship
+        if self.scenario_id is not None and self.street_network is None:
             raise ValueError(
-                "The street network must be set if a scenario ID is provided."
+                "Street network must be specified when using a scenario ID."
             )
-        # Check that polygon difference exists if catchment area type is polygon
-        if (
-            catchment_area_type == CatchmentAreaType.polygon.value
-            and polygon_difference is None
-        ):
+
+        # Validate polygon difference settings
+        is_polygon = self.catchment_area_type == CatchmentAreaType.polygon
+        if is_polygon and self.polygon_difference is None:
             raise ValueError(
-                "The polygon difference must be set if the catchment area type is polygon."
+                "Polygon difference must be specified for polygon catchment areas."
             )
-        # Check that polygon difference is not specified if catchment area type is not polygon
-        if (
-            catchment_area_type != CatchmentAreaType.polygon.value
-            and polygon_difference is not None
-        ):
+        elif not is_polygon and self.polygon_difference is not None:
             raise ValueError(
-                "The polygon difference must not be set if the catchment area type is not polygon."
+                "Polygon difference should not be specified for non-polygon catchment areas."
             )
+
+        # Validate routing type and travel cost constraints
+        self._validate_routing_constraints()
+
         return self
 
+    def _validate_routing_constraints(self) -> None:
+        """Validate routing type specific constraints."""
+        # For active mobility, enforce speed requirements and limits
+        if isinstance(self.routing_type, CatchmentAreaRoutingTypeActiveMobility):
+            if isinstance(self.travel_cost, TravelTimeCost):
+                if self.travel_cost.speed is None:
+                    raise ValueError(
+                        "Speed is required for active mobility time-based routing."
+                    )
+                if self.travel_cost.speed > routing_settings.active_mobility.max_speed:
+                    raise ValueError(
+                        f"Speed ({self.travel_cost.speed}) exceeds maximum for active mobility "
+                        f"({routing_settings.active_mobility.max_speed})."
+                    )
+                if (
+                    self.travel_cost.max_traveltime
+                    > routing_settings.active_mobility.max_traveltime
+                ):
+                    raise ValueError(
+                        f"Travel time ({self.travel_cost.max_traveltime}) exceeds maximum for active mobility "
+                        f"({routing_settings.active_mobility.max_traveltime})."
+                    )
 
-class ICatchmentAreaActiveMobility(_BaseICatchmentArea):
-    """Model for the active mobility catchment area request."""
+        # For car routing, enforce travel time limits
+        elif isinstance(self.routing_type, CatchmentAreaRoutingTypeCar):
+            if isinstance(self.travel_cost, TravelTimeCost):
+                if (
+                    self.travel_cost.max_traveltime
+                    > routing_settings.motorized_mobility_limits["max_traveltime"]
+                ):
+                    raise ValueError(
+                        f"Travel time ({self.travel_cost.max_traveltime}) exceeds maximum for motorized mobility "
+                        f"({routing_settings.motorized_mobility_limits['max_traveltime']})."
+                    )
+                # Speed is optional for cars
+                if self.travel_cost.speed is not None and self.travel_cost.speed <= 0:
+                    raise ValueError("Speed must be positive if specified.")
 
-    routing_type: CatchmentAreaRoutingTypeActiveMobility = Field(
-        ..., title="Routing Type", description="The routing type of the catchment area."
-    )
-    travel_cost: (
-        CatchmentAreaTravelTimeCostActiveMobility | CatchmentAreaTravelDistanceCost
-    ) = Field(
-        ..., title="Travel Cost", description="The travel cost of the catchment area."
-    )
 
-
-class ICatchmentAreaCar(_BaseICatchmentArea):
-    """Model for the car catchment area request."""
-
-    routing_type: CatchmentAreaRoutingTypeCar = Field(
-        ..., title="Routing Type", description="The routing type of the catchment area."
-    )
-    travel_cost: (
-        CatchmentAreaTravelTimeCostMotorizedMobility | CatchmentAreaTravelDistanceCost
-    ) = Field(
-        ..., title="Travel Cost", description="The travel cost of the catchment area."
-    )
+# Backward compatibility aliases
+ICatchmentAreaActiveMobility = CatchmentAreaRequest
+ICatchmentAreaCar = CatchmentAreaRequest
 
 
 request_examples: dict[str, Any] = {
@@ -235,9 +221,10 @@ request_examples: dict[str, Any] = {
         "single_point_walking_time": {
             "summary": "Single point catchment area walking (time based)",
             "value": {
-                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "starting_points": [{"lat": 52.5200, "lon": 13.4050}],
                 "routing_type": "walking",
                 "travel_cost": {
+                    "cost_type": "time",
                     "max_traveltime": 30,
                     "steps": 5,
                     "speed": 5,
@@ -252,9 +239,10 @@ request_examples: dict[str, Any] = {
         "single_point_walking_distance": {
             "summary": "Single point catchment area walking (distance based)",
             "value": {
-                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "starting_points": [{"lat": 52.5200, "lon": 13.4050}],
                 "routing_type": "walking",
                 "travel_cost": {
+                    "cost_type": "distance",
                     "max_distance": 2500,
                     "steps": 100,
                 },
@@ -268,9 +256,10 @@ request_examples: dict[str, Any] = {
         "single_point_cycling": {
             "summary": "Single point catchment area cycling",
             "value": {
-                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "starting_points": [{"lat": 52.5200, "lon": 13.4050}],
                 "routing_type": "bicycle",
                 "travel_cost": {
+                    "cost_type": "time",
                     "max_traveltime": 15,
                     "steps": 5,
                     "speed": 15,
@@ -283,11 +272,12 @@ request_examples: dict[str, Any] = {
         },
         # 4. Single catchment area for walking with scenario
         "single_point_walking_scenario": {
-            "summary": "Single point catchment area walking",
+            "summary": "Single point catchment area walking with scenario",
             "value": {
-                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "starting_points": [{"lat": 52.5200, "lon": 13.4050}],
                 "routing_type": "walking",
                 "travel_cost": {
+                    "cost_type": "time",
                     "max_traveltime": 30,
                     "steps": 10,
                     "speed": 5,
@@ -303,34 +293,21 @@ request_examples: dict[str, Any] = {
         "multi_point_walking": {
             "summary": "Multi point catchment area walking",
             "value": {
-                "starting_points": {
-                    "latitude": [
-                        52.5200,
-                        52.5210,
-                        52.5220,
-                        52.5230,
-                        52.5240,
-                        52.5250,
-                        52.5260,
-                        52.5270,
-                        52.5280,
-                        52.5290,
-                    ],
-                    "longitude": [
-                        13.4050,
-                        13.4060,
-                        13.4070,
-                        13.4080,
-                        13.4090,
-                        13.4100,
-                        13.4110,
-                        13.4120,
-                        13.4130,
-                        13.4140,
-                    ],
-                },
+                "starting_points": [
+                    {"lat": 52.5200, "lon": 13.4050},
+                    {"lat": 52.5210, "lon": 13.4060},
+                    {"lat": 52.5220, "lon": 13.4070},
+                    {"lat": 52.5230, "lon": 13.4080},
+                    {"lat": 52.5240, "lon": 13.4090},
+                    {"lat": 52.5250, "lon": 13.4100},
+                    {"lat": 52.5260, "lon": 13.4110},
+                    {"lat": 52.5270, "lon": 13.4120},
+                    {"lat": 52.5280, "lon": 13.4130},
+                    {"lat": 52.5290, "lon": 13.4140},
+                ],
                 "routing_type": "walking",
                 "travel_cost": {
+                    "cost_type": "time",
                     "max_traveltime": 30,
                     "steps": 10,
                     "speed": 5,
@@ -345,34 +322,21 @@ request_examples: dict[str, Any] = {
         "multi_point_cycling": {
             "summary": "Multi point catchment area cycling",
             "value": {
-                "starting_points": {
-                    "latitude": [
-                        52.5200,
-                        52.5210,
-                        52.5220,
-                        52.5230,
-                        52.5240,
-                        52.5250,
-                        52.5260,
-                        52.5270,
-                        52.5280,
-                        52.5290,
-                    ],
-                    "longitude": [
-                        13.4050,
-                        13.4060,
-                        13.4070,
-                        13.4080,
-                        13.4090,
-                        13.4100,
-                        13.4110,
-                        13.4120,
-                        13.4130,
-                        13.4140,
-                    ],
-                },
+                "starting_points": [
+                    {"lat": 52.5200, "lon": 13.4050},
+                    {"lat": 52.5210, "lon": 13.4060},
+                    {"lat": 52.5220, "lon": 13.4070},
+                    {"lat": 52.5230, "lon": 13.4080},
+                    {"lat": 52.5240, "lon": 13.4090},
+                    {"lat": 52.5250, "lon": 13.4100},
+                    {"lat": 52.5260, "lon": 13.4110},
+                    {"lat": 52.5270, "lon": 13.4120},
+                    {"lat": 52.5280, "lon": 13.4130},
+                    {"lat": 52.5290, "lon": 13.4140},
+                ],
                 "routing_type": "bicycle",
                 "travel_cost": {
+                    "cost_type": "time",
                     "max_traveltime": 15,
                     "steps": 5,
                     "speed": 15,
@@ -389,9 +353,10 @@ request_examples: dict[str, Any] = {
         "single_point_car_time": {
             "summary": "Single point catchment area car (time based)",
             "value": {
-                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "starting_points": [{"lat": 52.5200, "lon": 13.4050}],
                 "routing_type": "car",
                 "travel_cost": {
+                    "cost_type": "time",
                     "max_traveltime": 30,
                     "steps": 5,
                 },
@@ -405,9 +370,10 @@ request_examples: dict[str, Any] = {
         "single_point_car_distance": {
             "summary": "Single point catchment area car (distance based)",
             "value": {
-                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "starting_points": [{"lat": 52.5200, "lon": 13.4050}],
                 "routing_type": "car",
                 "travel_cost": {
+                    "cost_type": "distance",
                     "max_distance": 10000,
                     "steps": 100,
                 },
@@ -419,11 +385,12 @@ request_examples: dict[str, Any] = {
         },
         # 3. Single catchment area for car with scenario
         "single_point_car_scenario": {
-            "summary": "Single point catchment area car",
+            "summary": "Single point catchment area car with scenario",
             "value": {
-                "starting_points": {"latitude": [52.5200], "longitude": [13.4050]},
+                "starting_points": [{"lat": 52.5200, "lon": 13.4050}],
                 "routing_type": "car",
                 "travel_cost": {
+                    "cost_type": "time",
                     "max_traveltime": 30,
                     "steps": 10,
                 },
@@ -438,34 +405,21 @@ request_examples: dict[str, Any] = {
         "multi_point_car": {
             "summary": "Multi point catchment area car",
             "value": {
-                "starting_points": {
-                    "latitude": [
-                        52.5200,
-                        52.5210,
-                        52.5220,
-                        52.5230,
-                        52.5240,
-                        52.5250,
-                        52.5260,
-                        52.5270,
-                        52.5280,
-                        52.5290,
-                    ],
-                    "longitude": [
-                        13.4050,
-                        13.4060,
-                        13.4070,
-                        13.4080,
-                        13.4090,
-                        13.4100,
-                        13.4110,
-                        13.4120,
-                        13.4130,
-                        13.4140,
-                    ],
-                },
+                "starting_points": [
+                    {"lat": 52.5200, "lon": 13.4050},
+                    {"lat": 52.5210, "lon": 13.4060},
+                    {"lat": 52.5220, "lon": 13.4070},
+                    {"lat": 52.5230, "lon": 13.4080},
+                    {"lat": 52.5240, "lon": 13.4090},
+                    {"lat": 52.5250, "lon": 13.4100},
+                    {"lat": 52.5260, "lon": 13.4110},
+                    {"lat": 52.5270, "lon": 13.4120},
+                    {"lat": 52.5280, "lon": 13.4130},
+                    {"lat": 52.5290, "lon": 13.4140},
+                ],
                 "routing_type": "car",
                 "travel_cost": {
+                    "cost_type": "time",
                     "max_traveltime": 30,
                     "steps": 10,
                 },

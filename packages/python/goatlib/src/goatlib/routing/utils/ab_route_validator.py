@@ -2,7 +2,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 from goatlib.routing.schemas.ab_routing import ABLeg, ABRoute
-from goatlib.routing.schemas.base import Location, Mode
+from goatlib.routing.schemas.base import Coordinates, Mode
 
 logger = logging.getLogger(__name__)
 
@@ -29,26 +29,26 @@ class RouteValidator:
     def __init__(self) -> None:
         # Speed limits in km/h for different modes
         self.max_speeds = {
-            Mode.WALK: 8.0,  # Fast walking
-            Mode.BIKE: 35.0,  # E-bike or very fast cycling
-            Mode.CAR: 120.0,  # Highway speeds
-            Mode.BUS: 80.0,  # Urban bus max speed
-            Mode.TRAM: 60.0,  # Urban tram max speed
-            Mode.RAIL: 200.0,  # High-speed rail
-            Mode.SUBWAY: 80.0,  # Metro max speed
-            Mode.TRANSIT: 200.0,  # Generic transit (conservative)
+            Mode.walk: 8.0,  # Fast walking
+            Mode.bicycle: 35.0,  # E-bike or very fast cycling
+            Mode.car: 120.0,  # Highway speeds
+            Mode.bus: 80.0,  # Urban bus max speed
+            Mode.tram: 60.0,  # Urban tram max speed
+            Mode.rail: 200.0,  # High-speed rail
+            Mode.subway: 80.0,  # Metro max speed
+            Mode.transit: 200.0,  # Generic transit (conservative)
         }
 
         # Minimum speeds in km/h (below which is suspicious)
         self.min_speeds = {
-            Mode.WALK: 1.0,  # Very slow walking
-            Mode.BIKE: 5.0,  # Very slow cycling
-            Mode.CAR: 10.0,  # Traffic jam speeds
-            Mode.BUS: 5.0,  # Heavy traffic
-            Mode.TRAM: 5.0,  # Heavy traffic
-            Mode.RAIL: 20.0,  # Stopping train
-            Mode.SUBWAY: 10.0,  # Stopping metro
-            Mode.TRANSIT: 5.0,  # Conservative minimum
+            Mode.walk: 1.0,  # Very slow walking
+            Mode.bicycle: 5.0,  # Very slow cycling
+            Mode.car: 10.0,  # Traffic jam speeds
+            Mode.bus: 5.0,  # Heavy traffic
+            Mode.tram: 5.0,  # Heavy traffic
+            Mode.rail: 20.0,  # Stopping train
+            Mode.subway: 10.0,  # Stopping metro
+            Mode.transit: 5.0,  # Conservative minimum
         }
 
         # Transfer time limits
@@ -137,7 +137,7 @@ class RouteValidator:
             current_leg = route.legs[i]
             next_leg = route.legs[i + 1]
 
-            # Check location connectivity
+            # Check Coordinates connectivity
             distance = self._calculate_distance(
                 current_leg.destination, next_leg.origin
             )
@@ -169,7 +169,7 @@ class RouteValidator:
             elif -max_acceptable_overlap <= time_gap < 0:
                 # Small overlap is acceptable, especially for walking to transit
                 if not (
-                    current_leg.mode == Mode.WALK
+                    current_leg.mode == Mode.walk
                     and self._is_transit_mode(next_leg.mode)
                 ):
                     issues.append(
@@ -201,7 +201,7 @@ class RouteValidator:
         total_walking = sum(
             leg.distance or 0
             for leg in route.legs
-            if leg.mode == Mode.WALK and leg.distance
+            if leg.mode == Mode.walk and leg.distance
         )
 
         if total_walking > self.max_walking_distance:
@@ -265,7 +265,7 @@ class RouteValidator:
                 )
 
             # For walking legs, we can still do some basic validation since MOTIS provides actual distance
-            if leg.mode == Mode.WALK:
+            if leg.mode == Mode.walk:
                 straight_line = self._calculate_distance(leg.origin, leg.destination)
                 if straight_line > 0:
                     ratio = leg.distance / straight_line
@@ -342,7 +342,7 @@ class RouteValidator:
 
     def _is_transit_mode(self, mode: Mode) -> bool:
         """Check if mode is public transit."""
-        return mode in [Mode.TRANSIT, Mode.BUS, Mode.TRAM, Mode.RAIL, Mode.SUBWAY]
+        return mode in [Mode.transit, Mode.bus, Mode.tram, Mode.rail, Mode.subway]
 
     def _calculate_speed_kmh(self, leg: ABLeg) -> float:
         """Calculate average speed in km/h for a leg."""
@@ -350,8 +350,8 @@ class RouteValidator:
             return 0.0
         return (leg.distance / 1000) / (leg.duration / 3600)
 
-    def _calculate_distance(self, loc1: Location, loc2: Location) -> float:
-        """Calculate distance between two locations in meters (Haversine)."""
+    def _calculate_distance(self, loc1: Coordinates, loc2: Coordinates) -> float:
+        """Calculate distance between two Coordinatess in meters (Haversine)."""
         import math
 
         # Convert to radians

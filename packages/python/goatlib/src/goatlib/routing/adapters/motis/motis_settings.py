@@ -166,10 +166,10 @@ class Defaults(BaseSettings):
     num_itineraries: int = 5
     max_itineraries: int = 50  # From OpenAPI spec, no explicit default mentioned
     time_is_arrival: bool = False
-    transit_modes: list = [MotisMode.TRANSIT]  # Default allows all transit modes
-    direct_modes: list = [MotisMode.WALK]  # Default walking connections
-    pre_transit_modes: list = [MotisMode.WALK]  # Default pre-transit walking
-    post_transit_modes: list = [MotisMode.WALK]  # Default post-transit walking
+    transit_modes: list = [MotisMode.transit]  # Default allows all transit modes
+    direct_modes: list = [MotisMode.walk]  # Default walking connections
+    pre_transit_modes: list = [MotisMode.walk]  # Default pre-transit walking
+    post_transit_modes: list = [MotisMode.walk]  # Default post-transit walking
     max_transfers: int = 99  # High default as per OpenAPI spec
     search_window: int = 900  # 15 minutes in seconds
     max_matching_distance: int = 25  # 25 meters default
@@ -303,9 +303,9 @@ class OneToAllDefaults(BaseSettings):
     require_car_transport: bool = False  # false = no car transport requirement
     max_pre_transit_time: int = 900  # 15 minutes (900 seconds) to reach transit
     max_post_transit_time: int = 900  # 15 minutes (900 seconds) from transit
-    transit_modes: list = ["TRANSIT"]  # Default all transit modes
-    pre_transit_modes: list = ["WALK"]  # Default walking to transit
-    post_transit_modes: list = ["WALK"]  # Default walking from transit
+    transit_modes: list = [MotisMode.transit]  # Default all transit modes
+    pre_transit_modes: list = [MotisMode.walk]  # Default walking to transit
+    post_transit_modes: list = [MotisMode.walk]  # Default walking from transit
 
 
 # =====================================================================

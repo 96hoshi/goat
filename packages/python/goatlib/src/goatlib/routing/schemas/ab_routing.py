@@ -6,7 +6,7 @@ from typing import List, Self
 from pydantic import BaseModel, Field, computed_field, model_validator
 
 from goatlib.routing.schemas.base import (
-    Location,
+    Coordinates,
     Mode,
     Route,
     RoutingProvider,
@@ -19,8 +19,8 @@ class ABLeg(BaseModel):
     """Individual leg of an AB route."""
 
     leg_id: str | None = Field(default=None, description="Optional leg identifier")
-    origin: Location = Field(..., description="Starting location of the leg.")
-    destination: Location = Field(..., description="Ending location of the leg.")
+    origin: Coordinates = Field(..., description="Starting Coordinates of the leg.")
+    destination: Coordinates = Field(..., description="Ending Coordinates of the leg.")
     mode: Mode = Field(..., description="Transport mode for this leg.")
     departure_time: datetime = Field(..., description="Departure time of the leg.")
     arrival_time: datetime = Field(..., description="Arrival time of the leg.")
@@ -33,7 +33,7 @@ class ABLeg(BaseModel):
         """Get existing ID or create new one if needed."""
         if self.leg_id is None:
             self.leg_id = str(uuid.uuid4())
-        return self.leg_i
+        return self.leg_id
 
     @model_validator(mode="after")
     def validate_leg_times(self: Self) -> Self:
@@ -68,13 +68,13 @@ class ABRoute(Route):
 class ABRoutingRequest(BaseModel):
     """A-B routing request."""
 
-    origin: Location = Field(..., description="Start location")
-    destination: Location = Field(..., description="End location")
+    origin: Coordinates = Field(..., description="Start Coordinates")
+    destination: Coordinates = Field(..., description="End Coordinates")
     # TODO: set it in the adapter
     provider: RoutingProvider = Field(
-        default=RoutingProvider.MOTIS, description="Routing service provider"
+        default=RoutingProvider.motis, description="Routing service provider"
     )
-    modes: List[Mode] = Field(default=[Mode.WALK])
+    modes: List[Mode] = Field(default=[Mode.walk])
     time: datetime = Field(default=None, description="Departure time")
     # TODO: use it properly
     time_is_arrival: bool = Field(

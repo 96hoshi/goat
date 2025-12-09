@@ -2,12 +2,11 @@ from typing import AsyncGenerator
 
 import pytest_asyncio
 from goatlib.routing.adapters.motis import MotisPlanApiAdapter, create_motis_adapter
+from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingModePT
 from goatlib.routing.schemas.catchment_area_transit import (
-    AccessEgressMode,
-    CatchmentAreaRoutingModePT,
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
-    TransitCatchmentAreaTravelTimeCost,
+    TravelTimeCost,
 )
 
 
@@ -47,11 +46,12 @@ async def motis_adapter_fixture(
 @pytest_asyncio.fixture
 def berlin_request() -> TransitCatchmentAreaRequest:
     """Create a standard Berlin transit catchment area request."""
+    starting_points = TransitCatchmentAreaStartingPoints(
+        lat=[52.5200],
+        lon=[13.4050],  # Berlin center
+    )
     return TransitCatchmentAreaRequest(
-        starting_points=TransitCatchmentAreaStartingPoints(
-            latitude=[52.5200],  # Berlin center
-            longitude=[13.4050],
-        ),
+        starting_points=starting_points,
         transit_modes=[
             CatchmentAreaRoutingModePT.bus,
             CatchmentAreaRoutingModePT.tram,
@@ -59,7 +59,7 @@ def berlin_request() -> TransitCatchmentAreaRequest:
         ],
         access_mode=AccessEgressMode.walk,
         egress_mode=AccessEgressMode.walk,
-        travel_cost=TransitCatchmentAreaTravelTimeCost(
+        travel_cost=TravelTimeCost(
             max_traveltime=30,
             cutoffs=[15, 30],  # 15 and 30 minute isochrones
         ),
@@ -69,11 +69,12 @@ def berlin_request() -> TransitCatchmentAreaRequest:
 @pytest_asyncio.fixture
 def munich_request() -> TransitCatchmentAreaRequest:
     """Create a Munich transit catchment area request for testing."""
+    starting_points = TransitCatchmentAreaStartingPoints(
+        lat=[48.1351],
+        lon=[11.5820],  # Munich center
+    )
     return TransitCatchmentAreaRequest(
-        starting_points=TransitCatchmentAreaStartingPoints(
-            latitude=[48.1351],  # Munich center
-            longitude=[11.5820],
-        ),
+        starting_points=starting_points,
         transit_modes=[
             CatchmentAreaRoutingModePT.rail,
             CatchmentAreaRoutingModePT.subway,
@@ -81,7 +82,7 @@ def munich_request() -> TransitCatchmentAreaRequest:
         ],
         access_mode=AccessEgressMode.walk,
         egress_mode=AccessEgressMode.walk,
-        travel_cost=TransitCatchmentAreaTravelTimeCost(
+        travel_cost=TravelTimeCost(
             max_traveltime=45,
             cutoffs=[15, 30, 45],  # Three isochrone bands
         ),
@@ -91,13 +92,14 @@ def munich_request() -> TransitCatchmentAreaRequest:
 @pytest_asyncio.fixture
 def simple_berlin_request() -> TransitCatchmentAreaRequest:
     """Create a simple Berlin request for minimal testing."""
+    starting_points = TransitCatchmentAreaStartingPoints(
+        lat=[52.5200],
+        lon=[13.4050],  # Berlin
+    )
     return TransitCatchmentAreaRequest(
-        starting_points=TransitCatchmentAreaStartingPoints(
-            latitude=[52.5200],  # Berlin
-            longitude=[13.4050],
-        ),
+        starting_points=starting_points,
         transit_modes=[CatchmentAreaRoutingModePT.subway],
         access_mode=AccessEgressMode.walk,
         egress_mode=AccessEgressMode.walk,
-        travel_cost=TransitCatchmentAreaTravelTimeCost(max_traveltime=15, cutoffs=[15]),
+        travel_cost=TravelTimeCost(max_traveltime=15, cutoffs=[15]),
     )

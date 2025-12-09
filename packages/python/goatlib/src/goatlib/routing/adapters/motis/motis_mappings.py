@@ -7,79 +7,80 @@ from goatlib.routing.schemas.base import Mode
 class MotisMode(StrEnum):
     """MOTIS transport modes enum."""
 
-    WALK = "WALK"
-    BIKE = "BIKE"
-    RENTAL = "RENTAL"
-    CAR = "CAR"
-    CAR_PARKING = "CAR_PARKING"
-    CAR_DROPOFF = "CAR_DROPOFF"
-    ODM = "ODM"
-    FLEX = "FLEX"
-    TRANSIT = "TRANSIT"
-    TRAM = "TRAM"
-    SUBWAY = "SUBWAY"
-    FERRY = "FERRY"
-    AIRPLANE = "AIRPLANE"
-    METRO = "METRO"
-    BUS = "BUS"
-    COACH = "COACH"
-    RAIL = "RAIL"
-    HIGHSPEED_RAIL = "HIGHSPEED_RAIL"
-    LONG_DISTANCE = "LONG_DISTANCE"
-    NIGHT_RAIL = "NIGHT_RAIL"
-    REGIONAL_FAST_RAIL = "REGIONAL_FAST_RAIL"
-    REGIONAL_RAIL = "REGIONAL_RAIL"
-    SUBURBAN = "SUBURBAN"  # S-Bahn/suburban rail
-    CABLE_CAR = "CABLE_CAR"
-    FUNICULAR = "FUNICULAR"
-    AREAL_LIFT = "AREAL_LIFT"
-    OTHER = "OTHER"
+    walk = "WALK"
+    bike = "BIKE"
+    rental = "RENTAL"
+    car = "CAR"
+    car_parking = "CAR_PARKING"
+    car_dropoff = "CAR_DROPOFF"
+    odm = "ODM"
+    flex = "FLEX"
+    transit = "TRANSIT"
+    tram = "TRAM"
+    subway = "SUBWAY"
+    ferry = "FERRY"
+    airplane = "AIRPLANE"
+    metro = "METRO"
+    bus = "BUS"
+    coach = "COACH"
+    rail = "RAIL"
+    highspeed_rail = "HIGHSPEED_RAIL"
+    long_distance = "LONG_DISTANCE"
+    night_rail = "NIGHT_RAIL"
+    regional_fast_rail = "REGIONAL_FAST_RAIL"
+    regional_rail = "REGIONAL_RAIL"
+    suburban = "SUBURBAN"  # S-Bahn/suburban rail
+    cable_car = "CABLE_CAR"
+    funicular = "FUNICULAR"
+    areal_lift = "AREAL_LIFT"
+    other = "OTHER"
 
 
 # Mode mappings between MOTIS and internal representations
 MOTIS_TO_INTERNAL_MODE_MAP = {
     # Active mobility
-    MotisMode.WALK: Mode.WALK,
-    MotisMode.BIKE: Mode.BIKE,
+    MotisMode.walk: Mode.walk,
+    MotisMode.bike: Mode.bicycle,
     # Public transport - Direct mappings
-    MotisMode.BUS: Mode.BUS,
-    MotisMode.COACH: Mode.BUS,  # Coach is a type of bus
-    MotisMode.TRAM: Mode.TRAM,
-    MotisMode.SUBWAY: Mode.SUBWAY,
-    MotisMode.METRO: Mode.SUBWAY,  # Metro is subway
-    MotisMode.FERRY: Mode.FERRY,
-    MotisMode.CABLE_CAR: Mode.CABLE_CAR,
-    MotisMode.FUNICULAR: Mode.FUNICULAR,
+    MotisMode.bus: Mode.bus,
+    MotisMode.coach: Mode.bus,  # Coach is a type of bus
+    MotisMode.tram: Mode.tram,
+    MotisMode.subway: Mode.subway,
+    MotisMode.metro: Mode.subway,  # Metro is subway
+    MotisMode.ferry: Mode.ferry,
+    MotisMode.cable_car: Mode.cable_car,
+    MotisMode.funicular: Mode.funicular,
     # Rail variants - All map to RAIL
-    MotisMode.RAIL: Mode.RAIL,
-    MotisMode.HIGHSPEED_RAIL: Mode.RAIL,
-    MotisMode.LONG_DISTANCE: Mode.RAIL,
-    MotisMode.NIGHT_RAIL: Mode.RAIL,
-    MotisMode.REGIONAL_FAST_RAIL: Mode.RAIL,
-    MotisMode.REGIONAL_RAIL: Mode.RAIL,
-    MotisMode.SUBURBAN: Mode.RAIL,  # S-Bahn/suburban rail
+    MotisMode.rail: Mode.rail,
+    MotisMode.highspeed_rail: Mode.rail,
+    MotisMode.long_distance: Mode.rail,
+    MotisMode.night_rail: Mode.rail,
+    MotisMode.regional_fast_rail: Mode.rail,
+    MotisMode.regional_rail: Mode.rail,
+    MotisMode.suburban: Mode.rail,  # S-Bahn/suburban rail
     # Private transport
-    MotisMode.CAR: Mode.CAR,
-    MotisMode.CAR_PARKING: Mode.CAR,
-    MotisMode.CAR_DROPOFF: Mode.CAR,
+    MotisMode.car: Mode.car,
+    MotisMode.car_parking: Mode.car,
+    MotisMode.car_dropoff: Mode.car,
     # Meta-modes
-    MotisMode.TRANSIT: Mode.TRANSIT,
-    MotisMode.OTHER: Mode.OTHER,
+    MotisMode.transit: Mode.transit,
+    # Note: MotisMode.other maps to transit as a fallback for unknown modes
+    MotisMode.other: Mode.transit,
 }
 
 INTERNAL_TO_MOTIS_MODE_MAP = {
     # Create reverse mapping, handling duplicates by preferring the primary mode
-    Mode.WALK: MotisMode.WALK,
-    Mode.BIKE: MotisMode.BIKE,
-    Mode.BUS: MotisMode.BUS,
-    Mode.TRAM: MotisMode.TRAM,
-    Mode.SUBWAY: MotisMode.SUBWAY,
-    Mode.RAIL: MotisMode.RAIL,
-    Mode.FERRY: MotisMode.FERRY,
-    Mode.CABLE_CAR: MotisMode.CABLE_CAR,
-    Mode.FUNICULAR: MotisMode.FUNICULAR,
-    Mode.CAR: MotisMode.CAR,
-    Mode.TRANSIT: MotisMode.TRANSIT,
+    Mode.walk: MotisMode.walk,
+    Mode.bicycle: MotisMode.bike,
+    Mode.bus: MotisMode.bus,
+    Mode.tram: MotisMode.tram,
+    Mode.subway: MotisMode.subway,
+    Mode.rail: MotisMode.rail,
+    Mode.ferry: MotisMode.ferry,
+    Mode.cable_car: MotisMode.cable_car,
+    Mode.funicular: MotisMode.funicular,
+    Mode.car: MotisMode.car,
+    Mode.transit: MotisMode.transit,
 }
 
 
@@ -89,8 +90,8 @@ def internal_modes_to_motis_string(modes: List[Mode]) -> str:
     string required by the MOTIS API, intelligently handling the TRANSIT category.
 
     Example:
-      [Mode.TRANSIT, Mode.WALK] -> "TRANSIT,WALK" (because MOTIS understands "TRANSIT")
-      [Mode.SUBWAY, Mode.BUS, Mode.WALK] -> "SUBWAY,BUS,WALK"
+      [Mode.transit, Mode.walk] -> "TRANSIT,WALK" (because MOTIS understands "TRANSIT")
+      [Mode.subway, Mode.bus, Mode.walk] -> "SUBWAY,BUS,WALK"
     """
     motis_modes = [INTERNAL_TO_MOTIS_MODE_MAP.get(m) for m in modes]
 
@@ -98,7 +99,7 @@ def internal_modes_to_motis_string(modes: List[Mode]) -> str:
     valid_motis_modes = [m for m in motis_modes if m is not None]
 
     # The MOTIS API itself understands the "TRANSIT" meta-mode. If the user
-    # selected our internal `Mode.TRANSIT`, we should pass "TRANSIT" directly
+    # selected our internal `Mode.transit`, we should pass "TRANSIT" directly
     # to MOTIS rather than expanding it. MOTIS will do the expansion.
     # The only time we need to expand is if our internal logic needs to know
     # the specific modes. The API call does not.

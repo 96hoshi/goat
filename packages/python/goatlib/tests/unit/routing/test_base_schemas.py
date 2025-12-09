@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 from goatlib.routing.schemas.base import (
-    Location,
+    Coordinates,
     Mode,
     Route,
 )
@@ -18,27 +18,27 @@ from goatlib.routing.schemas.base import (
     ],
     ids=["lat-too-high", "lat-too-low", "lon-too-high", "lon-too-low"],
 )
-def test_location_invalid_coordinates(
+def test_coordinates_invalid_coordinates(
     lat: float, lon: float, expected_error: type
 ) -> None:
     """Test that invalid coordinates raise a ValueError."""
     with pytest.raises(expected_error):
-        Location(lat=lat, lon=lon)
+        Coordinates(lat=lat, lon=lon)
 
 
-def test_location_valid() -> None:
-    """Test creating a valid location."""
-    location = Location(lat=52.5200, lon=13.4050)
-    assert location.lat == 52.5200
-    assert location.lon == 13.4050
+def test_coordinates_valid() -> None:
+    """Test creating a valid Coordinates."""
+    coords = Coordinates(lat=52.5200, lon=13.4050)
+    assert coords.lat == 52.5200
+    assert coords.lon == 13.4050
 
 
 def test_transport_mode_enum() -> None:
     """Test that Mode enum has expected values."""
-    assert Mode.WALK == "walk"
-    assert Mode.BUS == "bus"
-    assert Mode.CAR == "car"
-    assert Mode.TRANSIT == "transit"
+    assert Mode.walk == "walk"
+    assert Mode.bus == "bus"
+    assert Mode.car == "car"
+    assert Mode.transit == "transit"
 
 
 # add a test for route schema

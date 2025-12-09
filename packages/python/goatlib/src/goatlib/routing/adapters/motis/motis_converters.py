@@ -11,7 +11,7 @@ from goatlib.routing.schemas.ab_routing import (
     ABRoutingRequest,
     ABRoutingResponse,
 )
-from goatlib.routing.schemas.base import Location, Mode
+from goatlib.routing.schemas.base import AccessEgressMode, Coordinates, Mode
 from goatlib.routing.schemas.catchment_area_transit import (
     CatchmentAreaPolygon,
     TransitCatchmentAreaRequest,
@@ -228,10 +228,10 @@ def _extract_transport_mode(leg: Dict[str, Any]) -> Mode:
         return MOTIS_TO_INTERNAL_MODE_MAP[motis_mode]
 
     logger.warning(f"Unknown mode {mode_str} in MOTIS leg")
-    return Mode.WALK
+    return Mode.walk
 
 
-def _extract_locations(leg: Dict[str, Any]) -> tuple[Location, Location]:
+def _extract_locations(leg: Dict[str, Any]) -> tuple[Coordinates, Coordinates]:
     """Extract origin and destination locations from MOTIS leg."""
     leg_fields = motis_settings.leg_fields
     location_fields = motis_settings.location_fields
@@ -239,12 +239,12 @@ def _extract_locations(leg: Dict[str, Any]) -> tuple[Location, Location]:
     from_data = leg[leg_fields.from_loc]
     to_data = leg[leg_fields.to_loc]
 
-    origin = Location(
+    origin = Coordinates(
         lat=from_data[location_fields.lat],
         lon=from_data[location_fields.lon],
     )
 
-    destination = Location(
+    destination = Coordinates(
         lat=to_data[location_fields.lat],
         lon=to_data[location_fields.lon],
     )
@@ -289,7 +289,7 @@ def translate_to_motis_one_to_all_request(
     defaults = motis_settings.one_to_all_defaults
 
     # Extract starting point coordinates
-    lat, lon = request.starting_points.latitude[0], request.starting_points.longitude[0]
+    lat, lon = request.starting_points.lat[0], request.starting_points.lon[0]
 
     # Build core parameters
     api_params = {
@@ -324,22 +324,30 @@ def translate_to_motis_one_to_all_request(
         if request.routing_settings.max_transfers:
             api_params[params.max_transfers] = request.routing_settings.max_transfers
 
-        if request.routing_settings.walk_settings:
-            walk_settings = request.routing_settings.walk_settings
-            walk_time_seconds = walk_settings.max_time * 60
-            walk_speed_ms = walk_settings.speed / 3.6  # km/h to m/s
+        # Access settings (pre-transit)
+        if request.routing_settings.access_settings:
+            access = request.routing_settings.access_settings
+            access_time_seconds = access.max_time * 60
+            access_speed_ms = access.speed / 3.6  # km/h to m/s
 
             api_params.update(
                 {
-                    params.max_pre_transit_time: walk_time_seconds,
-                    params.max_post_transit_time: walk_time_seconds,
-                    params.pedestrian_speed: walk_speed_ms,
+                    params.max_pre_transit_time: access_time_seconds,
+                    params.pedestrian_speed: access_speed_ms
+                    if access.mode == AccessEgressMode.walk
+                    else access_speed_ms,
+                    params.cycling_speed: access_speed_ms
+                    if access.mode == AccessEgressMode.bicycle
+                    else None,
                 }
             )
 
-        if request.routing_settings.bike_settings:
-            bike_speed_ms = request.routing_settings.bike_settings.speed / 3.6
-            api_params[params.cycling_speed] = bike_speed_ms
+        # Egress settings (post-transit)
+        if request.routing_settings.egress_settings:
+            egress = request.routing_settings.egress_settings
+            egress_time_seconds = egress.max_time * 60
+
+            api_params[params.max_post_transit_time] = egress_time_seconds
 
     # Add default values
     api_params.update(
@@ -433,6 +441,7 @@ def parse_motis_one_to_all_response(
         ) from e
 
 
+# TODO use catchment class
 def _create_polygon_from_points(
     reachable_locations: List[Dict[str, Any]],
 ) -> Dict[str, Any]:

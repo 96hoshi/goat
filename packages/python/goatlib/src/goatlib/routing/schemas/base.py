@@ -1,9 +1,6 @@
-# In your_package/schemas/base.py
-
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import List
 
 from pydantic import BaseModel, Field
 
@@ -11,37 +8,53 @@ from pydantic import BaseModel, Field
 class RoutingProvider(StrEnum):
     """Supported routing service providers."""
 
-    MOTIS = "motis"
-    OTP = "otp"
-    R5 = "r5"
+    motis = "motis"
+    otp = "otp"
+    r5 = "r5"
 
 
-class CatchmentAreaType(StrEnum):
-    """Catchment area type schema."""
+class Mode(StrEnum):
+    """Transport mode schema."""
 
-    point = "point"
-    network = "network"
-    grid = "grid"
-    polygon = "polygon"
+    airplane = "airplane"
+    bicycle = "bicycle"
+    bus = "bus"
+    cable_car = "cable_car"
+    car = "car"
+    coach = "coach"
+    ferry = "ferry"
+    flex = "flex"
+    funicular = "funicular"
+    gondola = "gondola"
+    rail = "rail"
+    scooter = "scooter"
+    subway = "subway"
+    tram = "tram"
+    carpool = "carpool"
+    taxi = "taxi"
+    transit = "transit"
+    walk = "walk"
+    trolleybus = "trolleybus"
+    monorail = "monorail"
 
 
 class CatchmentAreaRoutingTypeActiveMobility(StrEnum):
-    """Routing active mobility type schema."""
+    """Active mobility routing mode schema."""
 
-    walking = "walking"
+    walk = "walk"
     wheelchair = "wheelchair"
     bicycle = "bicycle"
     pedelec = "pedelec"
 
 
 class CatchmentAreaRoutingTypeCar(StrEnum):
-    """Routing car type schema."""
+    """Car routing mode schema."""
 
     car = "car"
 
 
 class CatchmentAreaRoutingModePT(StrEnum):
-    """Routing public transport mode schema."""
+    """Public transport routing mode schema."""
 
     bus = "bus"
     tram = "tram"
@@ -60,66 +73,29 @@ class AccessEgressMode(StrEnum):
     bicycle = "bicycle"
 
 
-class Mode(StrEnum):
-    # Active mobility
-    WALK = "walk"
-    BIKE = "bicycle"
+class CatchmentAreaType(StrEnum):
+    """Area analysis type schema."""
 
-    # Public transport
-    TRAM = "tram"
-    SUBWAY = "subway"
-    RAIL = "rail"
-    BUS = "bus"
-    FERRY = "ferry"
-    CABLE_CAR = "cable_car"
-    GONDOLA = "gondola"
-    FUNICULAR = "funicular"
-
-    # Private transport
-    CAR = "car"
-
-    # TODO decide if keep it and define which public transportation modes are included
-    # Meta-modes
-    TRANSIT = "transit"  # Any public transport mode
-    OTHER = "other"  # Fallback for unknown modes
+    point = "point"
+    network = "network"
+    grid = "grid"
+    polygon = "polygon"
 
 
-# --- Constants for Validation ---
-MAX_SPEEDS_KMH = {
-    Mode.BUS: 120,
-    Mode.TRAM: 80,
-    Mode.SUBWAY: 120,
-    Mode.RAIL: 400,
-}
-DEFAULT_MAX_SPEED_KMH = 250
-
-
-class Location(BaseModel):
-    """Geographic location using WGS84 coordinates."""
+class Coordinates(BaseModel):
+    """Standard geographic location with WGS84 coordinates."""
 
     lat: float = Field(..., description="Latitude", ge=-90.0, le=90.0)
     lon: float = Field(..., description="Longitude", ge=-180.0, le=180.0)
 
 
 class Route(BaseModel):
-    """Base model for a route."""
+    """Base route model with common routing attributes."""
 
-    route_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    distance: float = Field(..., description="Distance in meters", ge=0)
-    duration: float = Field(..., description="Duration in seconds", ge=0)
-    departure_time: datetime = Field(..., description="Departure time")
-
-
-class CatchmentAreaStartingPoints(BaseModel):
-    """Base model for catchment area attributes."""
-
-    latitude: List[float] | None = Field(
-        None,
-        title="Latitude",
-        description="The latitude of the catchment area center.",
+    route_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()), description="Unique route identifier"
     )
-    longitude: List[float] | None = Field(
-        None,
-        title="Longitude",
-        description="The longitude of the catchment area center.",
-    )
+    duration: float = Field(..., description="Total duration in seconds", ge=0)
+    distance: float | None = Field(None, description="Total distance in meters", ge=0)
+    departure_time: datetime = Field(..., description="Route departure time")
+    arrival_time: datetime | None = Field(None, description="Route arrival time")

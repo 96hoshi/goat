@@ -4,7 +4,7 @@ import pytest
 from goatlib.routing.adapters.motis import MotisPlanApiAdapter, create_motis_adapter
 from goatlib.routing.errors import RoutingError
 from goatlib.routing.schemas.ab_routing import ABRoutingRequest
-from goatlib.routing.schemas.base import Location, Mode
+from goatlib.routing.schemas.base import Coordinates, Mode
 
 
 async def test_invalid_api_url_handling() -> None:
@@ -15,9 +15,9 @@ async def test_invalid_api_url_handling() -> None:
     )
 
     request = ABRoutingRequest(
-        origin=Location(lat=52.5200, lon=13.4050),
-        destination=Location(lat=53.5511, lon=9.9937),
-        modes=[Mode.TRANSIT],
+        origin=Coordinates(lat=52.5200, lon=13.4050),
+        destination=Coordinates(lat=53.5511, lon=9.9937),
+        modes=[Mode.transit],
         max_results=1,
     )
 
@@ -35,9 +35,9 @@ async def test_api_timeout_handling(motis_adapter_online: MotisPlanApiAdapter) -
         mock_get.side_effect = Exception("Connection timeout")
 
         request = ABRoutingRequest(
-            origin=Location(lat=52.5, lon=13.4),
-            destination=Location(lat=53.5, lon=9.9),
-            modes=[Mode.TRANSIT],
+            origin=Coordinates(lat=52.5, lon=13.4),
+            destination=Coordinates(lat=53.5, lon=9.9),
+            modes=[Mode.transit],
             max_results=1,
         )
 
@@ -58,9 +58,9 @@ async def test_malformed_api_response_handling(
         mock_get.return_value = mock_response
 
         request = ABRoutingRequest(
-            origin=Location(lat=52.5, lon=13.4),
-            destination=Location(lat=53.5, lon=9.9),
-            modes=[Mode.TRANSIT],
+            origin=Coordinates(lat=52.5, lon=13.4),
+            destination=Coordinates(lat=53.5, lon=9.9),
+            modes=[Mode.transit],
             max_results=1,
         )
 
@@ -82,9 +82,9 @@ async def test_http_error_status_handling(
         mock_get.return_value = mock_response
 
         request = ABRoutingRequest(
-            origin=Location(lat=52.5, lon=13.4),
-            destination=Location(lat=53.5, lon=9.9),
-            modes=[Mode.TRANSIT],
+            origin=Coordinates(lat=52.5, lon=13.4),
+            destination=Coordinates(lat=53.5, lon=9.9),
+            modes=[Mode.transit],
             max_results=1,
         )
 
@@ -108,9 +108,9 @@ async def test_invalid_json_response_handling(
         mock_get.return_value = mock_response
 
         request = ABRoutingRequest(
-            origin=Location(lat=52.5, lon=13.4),
-            destination=Location(lat=53.5, lon=9.9),
-            modes=[Mode.TRANSIT],
+            origin=Coordinates(lat=52.5, lon=13.4),
+            destination=Coordinates(lat=53.5, lon=9.9),
+            modes=[Mode.transit],
             max_results=1,
         )
 

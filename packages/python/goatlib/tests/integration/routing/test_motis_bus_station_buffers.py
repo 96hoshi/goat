@@ -13,11 +13,11 @@ from goatlib.routing.adapters.motis.motis_converters import (
     extract_bus_stations_for_buffering,
     translate_to_motis_one_to_all_request,
 )
+from goatlib.routing.schemas.base import CatchmentAreaRoutingModePT
 from goatlib.routing.schemas.catchment_area_transit import (
-    CatchmentAreaRoutingModePT,
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
-    TransitCatchmentAreaTravelTimeCost,
+    TravelTimeCost,
 )
 from shapely.geometry import Point
 
@@ -81,18 +81,19 @@ def create_pt_buffer_params(
 @pytest.fixture
 def sample_request() -> TransitCatchmentAreaRequest:
     """Munich City Center Request."""
+    starting_points = TransitCatchmentAreaStartingPoints(
+        lat=[48.1351],
+        lon=[11.582],  # Munich center
+    )
     return TransitCatchmentAreaRequest(
-        starting_points=TransitCatchmentAreaStartingPoints(
-            latitude=[48.1351],
-            longitude=[11.582],  # Munich center
-        ),
+        starting_points=starting_points,
         transit_modes=[
             CatchmentAreaRoutingModePT.bus,
             CatchmentAreaRoutingModePT.subway,
             CatchmentAreaRoutingModePT.tram,
             CatchmentAreaRoutingModePT.rail,
         ],
-        travel_cost=TransitCatchmentAreaTravelTimeCost(max_traveltime=60, cutoffs=[60]),
+        travel_cost=TravelTimeCost(max_traveltime=60, cutoffs=[60]),
     )
 
 
