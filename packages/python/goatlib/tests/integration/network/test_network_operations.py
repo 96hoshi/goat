@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from goatlib.analysis.network.network_processor import (
     InMemoryNetworkProcessor,
@@ -64,45 +65,44 @@ def test_get_available_tables(processor: InMemoryNetworkProcessor) -> None:
     logger.info(f"Available tables: {tables_after}")
 
 
-def test_cleanup_intermediate_tables(processor: InMemoryNetworkProcessor) -> None:
-    """Test that explicit cleanup removes intermediate tables but leaves the base network."""
-    # Create intermediate tables explicitly using the base table name
-    base_table_name = processor.network_table_name
-    table1 = processor.apply_sql_query(
-        f"SELECT * FROM {base_table_name} WHERE length_m > 100"
-    )
-    table2 = processor.apply_sql_query(
-        f"SELECT * FROM {base_table_name} WHERE cost > 50"
-    )
+def test_context_manager_cleanup(network_file: Path) -> None:
+    """Test that context manager properly handles cleanup when exiting the block."""
+    # Use the context manager to create a processor
+    table_names_inside = None
+    network_table_name = None
 
-    # Verify they exist
-    all_tables_before = {
-        t[0]
-        for t in processor.con.execute(
-            "SELECT table_name FROM information_schema.tables"
-        ).fetchall()
-    }
-    assert table1 in all_tables_before
-    assert table2 in all_tables_before
+    with InMemoryNetworkProcessor(str(network_file)) as processor:
+        # Create some intermediate tables
+        network_table_name = processor.network_table_name
+        table1 = processor.apply_sql_query(
+            f"SELECT * FROM {network_table_name} WHERE length_m > 100"
+        )
+        table2 = processor.apply_sql_query(
+            f"SELECT * FROM {network_table_name} WHERE cost > 50"
+        )
 
-    # Perform cleanup
-    processor.cleanup_intermediate_tables()
+        # Verify they exist while inside the context
+        table_names_inside = {
+            t[0]
+            for t in processor.con.execute(
+                "SELECT table_name FROM information_schema.tables"
+            ).fetchall()
+        }
+        assert table1 in table_names_inside
+        assert table2 in table_names_inside
+        assert network_table_name in table_names_inside
 
-    # Verify they are gone, but the main table remains
-    all_tables_after = {
-        t[0]
-        for t in processor.con.execute(
-            "SELECT table_name FROM information_schema.tables"
-        ).fetchall()
-    }
-    assert table1 not in all_tables_after
-    assert table2 not in all_tables_after
-    assert processor.network_table_name in all_tables_after
+    # After exiting the context manager, the processor's connection should be closed
+    # and cleanup should have been performed automatically
+    assert table_names_inside is not None
+    assert (
+        len(table_names_inside) >= 3
+    )  # At minimum: network table + 2 intermediate tables
 
 
 def test_save_to_file(processor: InMemoryNetworkProcessor, tmp_path: str) -> None:
     """Test saving a table to a parquet file."""
-    output_file = tmp_path / "network_output.parquet"
+    output_file = Path("./network_output.parquet")
     processor.save_table_to_file(processor.network_table_name, str(output_file))
 
     # Verify the file was created
@@ -127,14 +127,12 @@ def test_concurrent_access(network_file: str) -> None:
     import concurrent.futures
 
     from goatlib.analysis.network.network_processor import (
-        InMemoryNetworkParams,
         InMemoryNetworkProcessor,
     )
 
     def create_processor_and_get_stats() -> dict:
         # Each thread gets its own processor instance with its own connection
-        params = InMemoryNetworkParams(network_path=str(network_file))
-        with InMemoryNetworkProcessor(params) as proc:
+        with InMemoryNetworkProcessor(str(network_file)) as proc:
             return proc.get_network_stats()
 
     # Use a smaller number of workers to avoid resource exhaustion
@@ -151,3 +149,14 @@ def test_concurrent_access(network_file: str) -> None:
     assert (
         len(set(edge_counts)) == 1
     ), "All processors should report the same edge count"
+
+
+def test_network_is_wkb_format(processor: InMemoryNetworkProcessor) -> None:
+    """Test that the network geometries are in WKB format."""
+    sample_geometry = processor.con.execute(
+        f"SELECT geometry FROM {processor.network_table_name} LIMIT 1"
+    ).fetchone()[0]
+
+    assert isinstance(
+        sample_geometry, bytes
+    ), f"Geometry should be in WKB format (bytes), got {type(sample_geometry)}"

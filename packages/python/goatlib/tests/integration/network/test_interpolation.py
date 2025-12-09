@@ -27,9 +27,12 @@ def test_interpolate_long_edges(processor: InMemoryNetworkProcessor) -> None:
     interpolation_distance = max_length / 3  # Create multiple segments
 
     # Perform interpolation
-    interpolated_table, info = processor.interpolate_long_edges(
+    interpolated_table, interpolated_meta = processor.interpolate_long_edges(
         max_edge_length=max_length, interpolation_distance=interpolation_distance
     )
+
+    # Extract interpolation info from metadata
+    info = interpolated_meta.raw_meta["interpolation_operation"]
 
     # Verify interpolation info
     assert info["original_edge_count"] == original_stats["edge_count"]
@@ -86,9 +89,12 @@ def test_interpolate_with_custom_distance(processor: InMemoryNetworkProcessor) -
     max_length = 200.0
     interpolation_distance = 50.0
 
-    interpolated_table, info = processor.interpolate_long_edges(
+    interpolated_table, interpolated_meta = processor.interpolate_long_edges(
         max_edge_length=max_length, interpolation_distance=interpolation_distance
     )
+
+    # Extract interpolation info from metadata
+    info = interpolated_meta.raw_meta["interpolation_operation"]
 
     # Verify configuration was used
     assert info["max_edge_length_threshold"] == max_length
@@ -109,9 +115,12 @@ def test_interpolate_default_distance(processor: InMemoryNetworkProcessor) -> No
     """Test edge interpolation with default interpolation distance."""
     max_length = 100.0
 
-    interpolated_table, info = processor.interpolate_long_edges(
+    interpolated_table, interpolated_meta = processor.interpolate_long_edges(
         max_edge_length=max_length
     )
+
+    # Extract interpolation info from metadata
+    info = interpolated_meta.raw_meta["interpolation_operation"]
 
     # Verify default interpolation distance was used (half of max_length)
     assert info["interpolation_distance"] == max_length / 2
@@ -119,13 +128,3 @@ def test_interpolate_default_distance(processor: InMemoryNetworkProcessor) -> No
 
     # Check that interpolation worked
     assert info["final_edge_count"] >= info["original_edge_count"]
-
-
-# Interpolation test completed:
-# Original edges:           375164
-# Long edges processed:     93791
-# Final edges:              1021482
-# New intermediate nodes:   1279968
-# Max edge length threshold: 51.2m
-# Processing time:           0.16s
-# PASSED

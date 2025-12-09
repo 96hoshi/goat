@@ -12,7 +12,10 @@ def test_split_output_and_properties(processor: InMemoryNetworkProcessor) -> Non
     Tests the `split_info` dictionary for correctness and reasonable values.
     This combines 'test_basic_edge_split' and 'test_split_info_coordinates'.
     """
-    _, split_info = processor.split_edge_at_point(latitude=48.13, longitude=11.58)
+    _, split_meta = processor.split_edge_at_point(latitude=48.13, longitude=11.58)
+
+    # Extract split info from metadata
+    split_info = split_meta.raw_meta["split_operation"]
 
     # Verify structure and existence of keys
     assert split_info["artificial_node_id"] is not None
@@ -40,9 +43,12 @@ def test_split_topology_and_invariance(processor: InMemoryNetworkProcessor) -> N
     original_stats = processor.get_network_stats()
     original_table_name = processor.network_table_name
 
-    split_table, split_info = processor.split_edge_at_point(
+    split_table, split_meta = processor.split_edge_at_point(
         latitude=48.13, longitude=11.58
     )
+
+    # Extract split info from metadata
+    split_info = split_meta.raw_meta["split_operation"]
     split_stats = processor.get_network_stats(split_table)
     original_edge_id = split_info["original_edge_split"]
     new_node_id = split_info["artificial_node_id"]
@@ -109,7 +115,7 @@ def test_comprehensive_workflow(processor: InMemoryNetworkProcessor) -> None:
     assert filtered_stats["edge_count"] < original_stats["edge_count"]
 
     # Step 2: Split on the filtered network
-    split_table, _ = processor.split_edge_at_point(
+    split_table, split_meta = processor.split_edge_at_point(
         latitude=48.13, longitude=11.58, base_table=filtered_table
     )
     split_stats = processor.get_network_stats(split_table)
@@ -131,7 +137,9 @@ def test_split_is_non_destructive(processor: InMemoryNetworkProcessor) -> None:
     original_table_name = processor.network_table_name
 
     # Perform the split operation
-    processor.split_edge_at_point(latitude=48.13, longitude=11.58)
+    split_table, split_meta = processor.split_edge_at_point(
+        latitude=48.13, longitude=11.58
+    )
 
     # Verify that the original table was not altered
     post_split_stats = processor.get_network_stats(original_table_name)
