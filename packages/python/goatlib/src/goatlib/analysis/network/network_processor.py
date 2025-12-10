@@ -7,30 +7,26 @@ from goatlib.io.utils import Metadata
 
 logger = logging.getLogger(__name__)
 
+# from .super I have only: cleanup, init and import_input
+# TODO make it dependent by a coordinate pair to buffer the network area around it
+
 
 class InMemoryNetworkProcessor(AnalysisTool):
     """
     High-performance in-memory network processor for routing.
-
-    The recommended usage is via the context manager pattern, which guarantees
-    that all resources are safely cleaned up.
-
-    Example:
-        with InMemoryNetworkProcessor("/path/to/network.parquet") as proc:
-            # The network is loaded and ready.
-            # ... perform operations on the network ...
     """
 
     def __init__(self, input_path: str) -> None:
         """Initializes the processor. Requires network parameters to be valid."""
-        super().__init__(db_path=":memory:")
+        super().__init__(db_path=input_path)
         self.input_path = input_path
         self.network_table_name = None
         self._is_loaded = False
 
     def __enter__(self) -> "InMemoryNetworkProcessor":
         """Enters the context, loading the network and returning the processor instance."""
-        self._load_network()
+        # Don't load network yet - wait for user to call create_buffered_subset
+        # This allows working with only a subset of the network for performance
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -38,21 +34,14 @@ class InMemoryNetworkProcessor(AnalysisTool):
         super().cleanup()
 
     # Public API Methods
-    def get_network_metadata(self) -> dict:
+    def get_network_metadata(self) -> Metadata:
         """Get metadata about the loaded network using AnalysisTool metadata functionality."""
         self._ensure_loaded()
-        return {
-            "geometry_column": self.meta.geometry_column,
-            "geometry_type": self.meta.geometry_type,
-            "crs": self.meta.crs,
-            "columns": [
-                {"name": col.name, "type": col.type} for col in self.meta.columns
-            ],
-            "table_name": self.network_table_name,
-        }
+        return self.meta
 
     def get_network_stats(self, table_name: str = None) -> Dict[str, Any]:
         """Get basic statistics about the network."""
+        self._ensure_loaded()
         target_table = table_name or self.network_table_name
         result = self.con.execute(f"""
             SELECT
@@ -73,16 +62,143 @@ class InMemoryNetworkProcessor(AnalysisTool):
         }
 
     def get_available_tables(self) -> list[str]:
-        """Get list of available table names in the database."""
         result = self.con.execute("SHOW TABLES").fetchall()
-        return [table[0] for table in result]
+        return [row[0] for row in result]
+
+    def create_buffered_subset(
+        self,
+        latitude: float,
+        longitude: float,
+        buffer_radius: float = 5000.0,
+        base_table: str = None,
+    ) -> str:
+        """
+        Create a subset of the network within a buffer around a point.
+        This dramatically reduces memory and processing time for local operations.
+
+        Use this method BEFORE performing expensive operations like splitting or
+        interpolation to work only with relevant network edges.
+
+        Args:
+            latitude: Center point latitude
+            longitude: Center point longitude
+            buffer_radius: Buffer distance in meters (default: 5km)
+            base_table: Source table (defaults to main network table)
+
+        Returns:
+            Name of the created subset table
+
+        Example:
+            >>> processor = InMemoryNetworkProcessor("network.parquet")
+            >>> # Load network and create 3km subset around Munich center
+            >>> subset = processor.create_buffered_subset(48.1351, 11.5820, 3000)
+            >>> # Get metadata with statistics
+            >>> meta = processor.get_subset_metadata(subset, 48.1351, 11.5820, 3000)
+            >>> # Now work only on the subset (much faster!)
+            >>> split, _ = processor.split_edge_at_point(48.135, 11.582, base_table=subset)
+        """
+        self._ensure_loaded()
+        source_table = base_table or self.network_table_name
+        subset_table_name = f"buffered_network_{uuid.uuid4().hex[:8]}"
+        geom_col = self.meta.geometry_column
+
+        # Create point and buffer using DuckDB spatial functions
+        subset_query = f"""
+        CREATE TABLE {subset_table_name} AS
+        WITH buffer_geom AS (
+            SELECT ST_Buffer(
+                ST_Point({longitude}, {latitude}),
+                {buffer_radius}
+            ) AS buffer
+        )
+        SELECT t.*
+        FROM {source_table} t, buffer_geom
+        WHERE ST_Intersects(t.{geom_col}, buffer_geom.buffer)
+        """
+
+        self.con.execute(subset_query)
+
+        # Get basic edge count for logging
+        edge_count = self.con.execute(
+            f"SELECT COUNT(*) FROM {subset_table_name}"
+        ).fetchone()[0]
+        original_count = self.con.execute(
+            f"SELECT COUNT(*) FROM {source_table}"
+        ).fetchone()[0]
+
+        logger.info(
+            f"Created buffered subset: {edge_count}/{original_count} edges "
+            f"({edge_count/original_count*100:.1f}% of original) "
+            f"within {buffer_radius}m of ({latitude}, {longitude})"
+        )
+
+        return subset_table_name
+
+    def get_subset_metadata(
+        self,
+        subset_table: str,
+        latitude: float,
+        longitude: float,
+        buffer_radius: float,
+        source_table: str = None,
+    ) -> Metadata:
+        """
+        Get metadata for a buffered subset table with detailed statistics.
+
+        Args:
+            subset_table: Name of the subset table
+            latitude: Center point latitude used for buffer
+            longitude: Center point longitude used for buffer
+            buffer_radius: Buffer radius in meters
+            source_table: Original source table (defaults to main network table)
+
+        Returns:
+            Metadata object with buffer operation details in raw_meta
+        """
+        self._ensure_loaded()
+        source_table = source_table or self.network_table_name
+        geom_col = self.meta.geometry_column
+
+        # Create metadata for subset table
+        subset_meta = self._create_metadata_from_template(subset_table)
+
+        # Get statistics about the subset
+        stats_query = f"""
+        SELECT
+            COUNT(*) as subset_edges,
+            (SELECT COUNT(*) FROM {source_table}) as original_edges,
+            SUM(length_m) as total_length_m,
+            MIN(ST_Distance({geom_col}, ST_Point({longitude}, {latitude}))) as min_distance,
+            MAX(ST_Distance({geom_col}, ST_Point({longitude}, {latitude}))) as max_distance
+        FROM {subset_table}
+        """
+
+        stats_result = self.con.execute(stats_query).fetchone()
+
+        # Add buffer operation details to metadata
+        subset_meta.raw_meta = subset_meta.raw_meta or {}
+        subset_meta.raw_meta["buffer_operation"] = {
+            "operation": "spatial_buffer",
+            "center_point": {"lat": latitude, "lon": longitude},
+            "buffer_radius_m": buffer_radius,
+            "original_edge_count": stats_result[1],
+            "subset_edge_count": stats_result[0],
+            "reduction_ratio": stats_result[0] / stats_result[1]
+            if stats_result[1] > 0
+            else 0,
+            "total_length_m": float(stats_result[2]) if stats_result[2] else 0,
+            "min_distance_m": float(stats_result[3]) if stats_result[3] else 0,
+            "max_distance_m": float(stats_result[4]) if stats_result[4] else 0,
+        }
+
+        return subset_meta
 
     def apply_sql_query(
-        self, sql_query: str, result_table_prefix: str = "query_result"
+        self, sql_query: str, result_table: str = "query_result"
     ) -> str:
         """Applies SQL and returns a NEW table, without destroying the input."""
         self._ensure_loaded()
-        result_table = self._generate_table_name(result_table_prefix)
+        result_table = f"{result_table}_{uuid.uuid4().hex[:8]}"
         try:
             # WARNING: This does not sanitize input SQL - use with caution in production
             self.con.execute(f"CREATE TABLE {result_table} AS {sql_query}")
@@ -118,7 +234,7 @@ class InMemoryNetworkProcessor(AnalysisTool):
         """
         self._ensure_loaded()
         source_table = base_table or self.network_table_name
-        split_table_name = self._generate_table_name("split_network")
+        split_table_name = f"split_network_{uuid.uuid4().hex[:8]}"
         new_node_id = f"split_node_{uuid.uuid4().hex[:8]}"
         point_geom = f"ST_Point({longitude}, {latitude})"
         geom_col = self.meta.geometry_column
@@ -370,52 +486,66 @@ class InMemoryNetworkProcessor(AnalysisTool):
         return interpolated_table, interpolated_meta
 
     # File I/O Methods
-    def save_table_to_file(
-        self, table_name: str, output_path: str, format: str = "PARQUET"
-    ) -> None:
-        """Save table to file with preserved geometry. Supports PARQUET, GPKG, etc."""
-        if format.upper() == "PARQUET":
-            self.con.execute(
-                f"COPY {table_name} TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
-            )
-        else:
-            # Use DuckDB's spatial export for other formats
-            self.con.execute(
-                f"COPY {table_name} TO '{output_path}' WITH (FORMAT GDAL, DRIVER '{format}')"
-            )
-
-    def save_table_to_tmp(self, table_name: str, format: str = "PARQUET") -> str:
-        """Save table to a temporary file and return the path."""
+    def save_table(
+        self,
+        table_name: str,
+        output_path: str | None = None,
+        format: str = "PARQUET",
+    ) -> str:
         import tempfile
 
-        suffix = ".parquet" if format.upper() == "PARQUET" else ".gpkg"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
-            output_path = tmp_file.name
-        self.save_table_to_file(table_name, output_path, format)
+        def quote_ident(name: str) -> str:
+            return '"' + name.replace('"', '""') + '"'
+
+        format_upper = format.upper()
+        table = quote_ident(table_name)
+
+        if output_path is None:
+            suffix = ".parquet" if format_upper == "PARQUET" else ".gpkg"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                output_path = tmp.name
+
+        if format_upper == "PARQUET":
+            self.con.execute(
+                f"""
+                COPY {table} TO '{output_path}'
+                (
+                    FORMAT PARQUET,
+                    COMPRESSION ZSTD,
+                    ROW_GROUP_SIZE 1000000
+                )
+                """
+            )
+        else:
+            self.con.execute(
+                f"""
+                COPY {table} TO '{output_path}'
+                (
+                    FORMAT GDAL,
+                    DRIVER '{format_upper}'
+                )
+                """
+            )
+
         return output_path
 
     # Private Helper Methods
     def _ensure_loaded(self) -> None:
         if not self._is_loaded:
-            self.network_table_name = self._load_network()
+            self._load_network()
 
     def _load_network(self) -> None:
         """Load the network file using the parent class import functionality."""
         if self._is_loaded:
             return
 
-        self.network_table_name = self._generate_table_name("v_input")
-
         # Import using the parent class method which handles metadata correctly
-        self.meta, self.network_table_name = super().import_input(
-            self.input_path, table_name=self.network_table_name
-        )
+        self.meta, self.network_table_name = super().import_input(self.input_path)
 
+        # Network loaded - use create_buffered_subset() to work with a subset for performance
         self._is_loaded = True
-        self._validate_network_schema()
 
-    def _validate_network_schema(self) -> None:
-        """Validate that the loaded network has required columns."""
+        # Validate required columns exist
         required_columns = {"edge_id", "source", "target", "geometry"}
 
         # Get actual column names from metadata
@@ -431,16 +561,3 @@ class InMemoryNetworkProcessor(AnalysisTool):
         # Validate geometry column exists
         if not self.meta.geometry_column:
             raise ValueError("Network file must have a geometry column")
-
-    def _generate_table_name(self, prefix: str) -> str:
-        return f"{prefix}_{uuid.uuid4().hex[:8]}"
-
-    def _create_metadata_from_template(self, table_name: str) -> Metadata:
-        """Create metadata for tables with the same schema as the original network (fast path)."""
-        return Metadata(
-            geometry_column=self.meta.geometry_column,
-            geometry_type=self.meta.geometry_type,
-            crs=self.meta.crs,
-            columns=self.meta.columns,  # Reuse original columns since schema is identical
-            raw_meta={},
-        )

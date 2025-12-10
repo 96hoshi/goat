@@ -6,7 +6,7 @@ from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingM
 from goatlib.routing.schemas.catchment_area_transit import (
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
-    TravelTimeCost,
+    TransitCatchmentAreaTravelTimeCost,
 )
 
 
@@ -59,7 +59,7 @@ def berlin_request() -> TransitCatchmentAreaRequest:
         ],
         access_mode=AccessEgressMode.walk,
         egress_mode=AccessEgressMode.walk,
-        travel_cost=TravelTimeCost(
+        travel_cost=TransitCatchmentAreaTravelTimeCost(
             max_traveltime=30,
             cutoffs=[15, 30],  # 15 and 30 minute isochrones
         ),
@@ -82,7 +82,7 @@ def munich_request() -> TransitCatchmentAreaRequest:
         ],
         access_mode=AccessEgressMode.walk,
         egress_mode=AccessEgressMode.walk,
-        travel_cost=TravelTimeCost(
+        travel_cost=TransitCatchmentAreaTravelTimeCost(
             max_traveltime=45,
             cutoffs=[15, 30, 45],  # Three isochrone bands
         ),
@@ -101,5 +101,5 @@ def simple_berlin_request() -> TransitCatchmentAreaRequest:
         transit_modes=[CatchmentAreaRoutingModePT.subway],
         access_mode=AccessEgressMode.walk,
         egress_mode=AccessEgressMode.walk,
-        travel_cost=TravelTimeCost(max_traveltime=15, cutoffs=[15]),
+        travel_cost=TransitCatchmentAreaTravelTimeCost(max_traveltime=15, cutoffs=[15]),
     )

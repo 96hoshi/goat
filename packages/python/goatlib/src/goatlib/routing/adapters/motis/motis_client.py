@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional, Self
 
 import httpx
 
+from goatlib.routing.errors import ParsingError, ServiceError
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,7 +83,8 @@ class MotisServiceClient:
             Raw MOTIS response data
 
         Raises:
-            RuntimeError: If the MOTIS service is unavailable or returns an error
+            ServiceError: If the MOTIS service is unavailable or returns an error
+            ParsingError: If the response format is invalid
         """
         if self.use_fixtures:
             return self._load_fixture_response()
@@ -99,7 +102,8 @@ class MotisServiceClient:
             Raw MOTIS one-to-all response data
 
         Raises:
-            RuntimeError: If the MOTIS service is unavailable or returns an error
+            ServiceError: If the MOTIS service is unavailable or returns an error
+            ParsingError: If the response format is invalid
         """
         # For now, one-to-all only supports real API calls, not fixtures
         return await self._make_one_to_all_api_request(motis_request)
@@ -127,16 +131,18 @@ class MotisServiceClient:
             else:
                 log_msg = f"An unexpected request error occurred: {e}"
             logger.error(log_msg)
-            raise RuntimeError("MOTIS service request failed to complete.") from e
+            raise ServiceError("MOTIS service request failed to complete.") from e
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response from MOTIS service: {e}")
-            raise RuntimeError("Invalid response format from MOTIS service.") from e
+            raise ParsingError("Invalid response format from MOTIS service.") from e
 
     async def _make_one_to_all_api_request(
         self: Self, api_params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        logger.info(f"Making async MOTIS one-to-all request to {self.one_to_all_endpoint}")
+        logger.info(
+            f"Making async MOTIS one-to-all request to {self.one_to_all_endpoint}"
+        )
         try:
             response = await self._http_client.get(
                 self.one_to_all_endpoint,
@@ -148,7 +154,9 @@ class MotisServiceClient:
 
         except httpx.RequestError as e:
             if isinstance(e, httpx.TimeoutException):
-                log_msg = f"Request to MOTIS one-to-all service timed out at {e.request.url}"
+                log_msg = (
+                    f"Request to MOTIS one-to-all service timed out at {e.request.url}"
+                )
             if isinstance(e, httpx.HTTPStatusError):
                 log_msg = f"MOTIS one-to-all service returned error {e.response.status_code} for request to {e.request.url}"
             if isinstance(e, httpx.ConnectionError):
@@ -156,11 +164,17 @@ class MotisServiceClient:
             else:
                 log_msg = f"An unexpected request error occurred: {e}"
             logger.error(log_msg)
-            raise RuntimeError("MOTIS one-to-all service request failed to complete.") from e
+            raise ServiceError(
+                "MOTIS one-to-all service request failed to complete."
+            ) from e
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response from MOTIS one-to-all service: {e}")
-            raise RuntimeError("Invalid response format from MOTIS one-to-all service.") from e
+            logger.error(
+                f"Failed to parse JSON response from MOTIS one-to-all service: {e}"
+            )
+            raise ParsingError(
+                "Invalid response format from MOTIS one-to-all service."
+            ) from e
 
     async def close(self: Self) -> None:
         """Closes the underlying HTTP client."""

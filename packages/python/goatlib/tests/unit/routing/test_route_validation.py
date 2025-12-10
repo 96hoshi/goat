@@ -2,7 +2,8 @@ from datetime import datetime, timezone
 
 from goatlib.routing.schemas.ab_routing import ABLeg, ABRoute
 from goatlib.routing.schemas.base import Coordinates, Mode
-from goatlib.routing.utils.ab_route_validator import (
+
+from packages.python.goatlib.tests.utils.ab_route_validator import (
     validate_route_response,
     validate_single_route,
 )

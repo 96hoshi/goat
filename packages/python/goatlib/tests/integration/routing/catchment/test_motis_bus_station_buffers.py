@@ -17,7 +17,7 @@ from goatlib.routing.schemas.base import CatchmentAreaRoutingModePT
 from goatlib.routing.schemas.catchment_area_transit import (
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
-    TravelTimeCost,
+    TransitCatchmentAreaTravelTimeCost,
 )
 from shapely.geometry import Point
 
@@ -93,7 +93,7 @@ def sample_request() -> TransitCatchmentAreaRequest:
             CatchmentAreaRoutingModePT.tram,
             CatchmentAreaRoutingModePT.rail,
         ],
-        travel_cost=TravelTimeCost(max_traveltime=60, cutoffs=[60]),
+        travel_cost=TransitCatchmentAreaTravelTimeCost(max_traveltime=60, cutoffs=[60]),
     )
 
 

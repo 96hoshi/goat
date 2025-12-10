@@ -1,8 +1,9 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import Self
 
-from goatlib.routing.errors import RoutingError
+from goatlib.routing.errors import ParsingError, RoutingError, ServiceError
 from goatlib.routing.interfaces.routing_service import RoutingService
 from goatlib.routing.schemas.ab_routing import (
     ABRoutingRequest,
@@ -43,16 +44,48 @@ class MotisPlanApiAdapter(RoutingService):
         self.motis_client = motis_client
 
     async def route(self: Self, request: ABRoutingRequest) -> ABRoutingResponse:
+        """
+        Execute a routing request using the MOTIS plan API.
+        Args:
+            request: ABRoutingRequest containing origin, destination, modes, etc.
+        Returns:
+            ABRoutingResponse with routing results
+        Raises:
+            ParsingError: If request/response format is invalid
+            ServiceError: If network/service connection fails
+            RoutingError: For unexpected errors
+        """
+
         try:
+            # Translate our internal request to MOTIS format
             request_data = translate_to_motis_request(request)
+
+            # Make the network call to MOTIS
             motis_response = await self.motis_client.plan(request_data)
+
+            # Parse MOTIS response to our internal format
             response_data = parse_motis_response(motis_response)
 
             return response_data
 
+        except (asyncio.TimeoutError, ConnectionError) as e:
+            # Network-specific issues
+            logger.error(f"Network error while contacting MOTIS: {e}")
+            raise ServiceError("Failed to connect to the routing service") from e
+
+        except ParsingError as e:
+            # Request/response format issues - log and re-raise as-is
+            logger.warning(f"Parsing error in MOTIS routing: {e}")
+            raise
+
+        except ServiceError:
+            # Service errors from lower layers - re-raise as-is
+            raise
+
         except Exception as e:
-            logger.error(f"Failed to execute routing request via MOTIS: {e}")
-            raise RoutingError("Failed to process routing request via MOTIS") from e
+            # Unexpected errors - wrap in RoutingError
+            logger.error(f"Unexpected error during MOTIS routing: {e}")
+            raise RoutingError("An unexpected internal error occurred") from e
 
     async def get_transit_catchment_area(
         self: Self, request: TransitCatchmentAreaRequest
@@ -67,27 +100,40 @@ class MotisPlanApiAdapter(RoutingService):
             TransitCatchmentAreaResponse with isochrone polygons
 
         Raises:
-            RoutingError: If the MOTIS service fails or returns invalid data
+            ParsingError: If request/response format is invalid
+            ServiceError: If network/service connection fails
+            RoutingError: For unexpected errors
         """
         try:
-            # Convert our request to MOTIS one-to-all parameters
+            # Translate our internal request to MOTIS one-to-all format
             request_data = translate_to_motis_one_to_all_request(request)
 
-            # Call MOTIS one-to-all API
+            # Make the network call to MOTIS
             motis_response = await self.motis_client.one_to_all(request_data)
 
-            # Parse response and convert to our format
+            # Parse MOTIS response to our internal format
             response_data = parse_motis_one_to_all_response(motis_response, request)
 
             return response_data
 
+        except (asyncio.TimeoutError, ConnectionError) as e:
+            # Network-specific issues
+            logger.error(f"Network error while contacting MOTIS one-to-all: {e}")
+            raise ServiceError("Failed to connect to the routing service") from e
+
+        except ParsingError as e:
+            # Request/response format issues - log and re-raise as-is
+            logger.warning(f"Parsing error in MOTIS catchment area: {e}")
+            raise
+
+        except ServiceError:
+            # Service errors from lower layers - re-raise as-is
+            raise
+
         except Exception as e:
-            logger.error(
-                f"Failed to execute transit catchment area request via MOTIS: {e}"
-            )
-            raise RoutingError(
-                "Failed to process transit catchment area request via MOTIS"
-            ) from e
+            # Unexpected errors - wrap in RoutingError
+            logger.error(f"Unexpected error during MOTIS catchment area request: {e}")
+            raise RoutingError("An unexpected internal error occurred") from e
 
 
 def create_motis_adapter(
@@ -101,6 +147,7 @@ def create_motis_adapter(
     Args:
         use_fixtures: Whether to use fixture data instead of real API calls
         fixture_path: Path to the directory containing MOTIS fixture data
+        base_url: Base URL for the MOTIS API
 
     Returns:
         Configured MotisPlanApiAdapter instance

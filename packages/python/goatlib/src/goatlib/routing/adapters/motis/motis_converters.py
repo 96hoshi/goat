@@ -11,7 +11,12 @@ from goatlib.routing.schemas.ab_routing import (
     ABRoutingRequest,
     ABRoutingResponse,
 )
-from goatlib.routing.schemas.base import AccessEgressMode, Coordinates, Mode
+from goatlib.routing.schemas.base import (
+    AccessEgressMode,
+    Coordinates,
+    Mode,
+    RoutingProvider,
+)
 from goatlib.routing.schemas.catchment_area_transit import (
     CatchmentAreaPolygon,
     TransitCatchmentAreaRequest,
@@ -83,6 +88,14 @@ def _extract_place_data(place: Dict[str, Any]) -> Dict[str, Any]:
 
 def translate_to_motis_request(request: ABRoutingRequest) -> Dict[str, Any]:
     """Convert ABRoutingRequest to MOTIS v5/plan GET API parameters."""
+    if not request:
+        raise ParsingError("Routing request cannot be None or empty")
+
+    if request.provider != RoutingProvider.motis:
+        raise ParsingError(
+            f"MotisPlanApiAdapter cannot handle requests for provider {request.provider}"
+        )
+
     params = motis_settings.request_params
     defaults = motis_settings.defaults
 

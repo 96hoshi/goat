@@ -8,7 +8,7 @@ from goatlib.routing.schemas.base import (
 )
 
 
-class CatchmentSchema(BaseModel):
+class Catchment(BaseModel):
     """Schema for catchment area requests."""
 
     starting_points: List[Coordinates] = Field(
@@ -23,7 +23,6 @@ class CatchmentSchema(BaseModel):
         title="Cutoffs",
         description="List of cost thresholds for catchment area calculation (time in minutes or distance in meters).",
         min_length=1,
-        max_length=10,
     )
 
     type: CatchmentAreaType = Field(

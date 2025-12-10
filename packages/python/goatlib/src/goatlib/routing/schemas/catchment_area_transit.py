@@ -10,7 +10,7 @@ from goatlib.routing.schemas.base import (
 )
 
 
-class CatchmentAreaStartingPointsPT(BaseModel):
+class TransitCatchmentAreaStartingPoints(BaseModel):
     """Starting points for transit catchment areas (single point only)."""
 
     lat: List[float] = Field(
@@ -34,7 +34,7 @@ class CatchmentAreaStartingPointsPT(BaseModel):
         return self
 
 
-class TravelTimeCost(BaseModel):
+class TransitCatchmentAreaTravelTimeCost(BaseModel):
     """Travel time configuration with cutoffs for transit analysis."""
 
     max_traveltime: int = Field(
@@ -164,7 +164,7 @@ class TransitRoutingSettings(BaseModel):
 class TransitCatchmentAreaRequest(BaseModel):
     """Unified request model for transit catchment area calculation."""
 
-    starting_points: CatchmentAreaStartingPointsPT = Field(
+    starting_points: TransitCatchmentAreaStartingPoints = Field(
         ...,
         title="Starting Points",
         description="Starting point for catchment area calculation (single point only).",
@@ -175,7 +175,7 @@ class TransitCatchmentAreaRequest(BaseModel):
         description="List of transit modes to include in the calculation.",
         min_length=1,
     )
-    travel_cost: TravelTimeCost = Field(
+    travel_cost: TransitCatchmentAreaTravelTimeCost = Field(
         ...,
         title="Travel Cost Configuration",
         description="Travel time and cutoff configuration.",
@@ -208,12 +208,7 @@ class TransitCatchmentAreaRequest(BaseModel):
         return self.routing_settings.max_transfers
 
 
-# Backward compatibility aliases
-TransitCatchmentAreaStartingPoints = CatchmentAreaStartingPointsPT
-TransitCatchmentAreaTravelTimeCost = TravelTimeCost
-
-
-"""Response schemas."""
+# ------------------------ Response Schemas ----------------------
 
 
 class CatchmentAreaPolygon(BaseModel):
@@ -265,7 +260,7 @@ class TransitCatchmentAreaResponse(BaseModel):
     )
 
 
-"""Example requests."""
+# ------------------------ Example Requests ----------------------
 
 
 request_examples_transit_catchment_area = {

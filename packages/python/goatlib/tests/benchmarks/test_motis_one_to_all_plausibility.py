@@ -13,8 +13,8 @@ from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingM
 from goatlib.routing.schemas.catchment_area_transit import (
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
+    TransitCatchmentAreaTravelTimeCost,
     TransitRoutingSettings,
-    TravelTimeCost,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,7 +139,7 @@ class MotisOneToAllPlausibilityTester:
                 ],
                 access_mode=AccessEgressMode.walk,
                 egress_mode=AccessEgressMode.walk,
-                travel_cost=TravelTimeCost(
+                travel_cost=TransitCatchmentAreaTravelTimeCost(
                     max_traveltime=30,
                     cutoffs=[10, 20, 30],
                 ),
@@ -258,7 +258,7 @@ def sample_request():
         ],
         access_mode=AccessEgressMode.walk,
         egress_mode=AccessEgressMode.walk,
-        travel_cost=TravelTimeCost(
+        travel_cost=TransitCatchmentAreaTravelTimeCost(
             max_traveltime=30,
             cutoffs=[10, 20, 30],
         ),
@@ -278,7 +278,7 @@ async def test_motis_one_to_all_raw_response_validation(plausibility_tester):
                 lon=[11.5820],
             ),
             transit_modes=[CatchmentAreaRoutingModePT.bus],
-            travel_cost=TravelTimeCost(
+            travel_cost=TransitCatchmentAreaTravelTimeCost(
                 max_traveltime=20,
                 cutoffs=[10, 20],
             ),

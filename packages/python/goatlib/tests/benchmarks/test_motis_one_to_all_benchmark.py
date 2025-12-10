@@ -6,7 +6,7 @@ from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingM
 from goatlib.routing.schemas.catchment_area_transit import (
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
-    TravelTimeCost,
+    TransitCatchmentAreaTravelTimeCost,
 )
 
 from .conftest import BenchmarkMetrics, save_benchmark_results
@@ -75,7 +75,7 @@ async def test_motis_one_to_all_performance_benchmark():
             ],
             access_mode=AccessEgressMode.walk,
             egress_mode=AccessEgressMode.walk,
-            travel_cost=TravelTimeCost(
+            travel_cost=TransitCatchmentAreaTravelTimeCost(
                 max_traveltime=45,
                 cutoffs=[15, 30, 45],  # Multiple cutoffs for larger response
             ),
@@ -209,7 +209,7 @@ async def test_motis_one_to_all_minimal_benchmark():
             transit_modes=[CatchmentAreaRoutingModePT.subway],
             access_mode=AccessEgressMode.walk,
             egress_mode=AccessEgressMode.walk,
-            travel_cost=TravelTimeCost(
+            travel_cost=TransitCatchmentAreaTravelTimeCost(
                 max_traveltime=15,
                 cutoffs=[15],
             ),

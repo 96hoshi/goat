@@ -6,7 +6,7 @@ from goatlib.routing.schemas.base import (
 from goatlib.routing.schemas.catchment_area_transit import (
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaStartingPoints,
-    TravelTimeCost,
+    TransitCatchmentAreaTravelTimeCost,
 )
 
 
@@ -51,7 +51,9 @@ class TestMotisAdapterOneToAll:
             transit_modes=[CatchmentAreaRoutingModePT.rail],
             access_mode=AccessEgressMode.walk,
             egress_mode=AccessEgressMode.walk,
-            travel_cost=TravelTimeCost(max_traveltime=20, cutoffs=[20]),
+            travel_cost=TransitCatchmentAreaTravelTimeCost(
+                max_traveltime=20, cutoffs=[20]
+            ),
         )
 
         response = await motis_adapter_online.get_transit_catchment_area(
@@ -75,7 +77,9 @@ class TestMotisAdapterOneToAll:
             ],
             access_mode=AccessEgressMode.walk,
             egress_mode=AccessEgressMode.walk,
-            travel_cost=TravelTimeCost(max_traveltime=20, cutoffs=[20]),
+            travel_cost=TransitCatchmentAreaTravelTimeCost(
+                max_traveltime=20, cutoffs=[20]
+            ),
         )
 
         response = await motis_adapter_online.get_transit_catchment_area(
@@ -112,7 +116,9 @@ class TestMotisAdapterOneToAll:
             ],
             access_mode=AccessEgressMode.bicycle,
             egress_mode=AccessEgressMode.bicycle,
-            travel_cost=TravelTimeCost(max_traveltime=25, cutoffs=[25]),
+            travel_cost=TransitCatchmentAreaTravelTimeCost(
+                max_traveltime=25, cutoffs=[25]
+            ),
         )
 
         response = await motis_adapter_online.get_transit_catchment_area(bike_request)
@@ -132,7 +138,9 @@ class TestMotisAdapterOneToAll:
             transit_modes=[CatchmentAreaRoutingModePT.bus],
             access_mode=AccessEgressMode.walk,
             egress_mode=AccessEgressMode.walk,
-            travel_cost=TravelTimeCost(max_traveltime=15, cutoffs=[15]),
+            travel_cost=TransitCatchmentAreaTravelTimeCost(
+                max_traveltime=15, cutoffs=[15]
+            ),
         )
 
         response = await motis_adapter_online.get_transit_catchment_area(
