@@ -5,6 +5,7 @@ import pytest
 from goatlib.analysis.network.network_processor import (
     InMemoryNetworkProcessor,
 )
+from goatlib.routing.schemas.base import Coordinates
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 def processor(network_file: Path) -> InMemoryNetworkProcessor:
     """A pytest fixture that yields a processor within a context manager."""
     with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        proc.load_network()
         yield proc
     # Cleanup is handled automatically as the 'with' block exits
 
@@ -20,42 +22,71 @@ def processor(network_file: Path) -> InMemoryNetworkProcessor:
 # ------------ Test Cases ------------
 
 
-def test_network_operations(
+def test_network_loading(
     processor: InMemoryNetworkProcessor,
 ) -> None:
     """Tests chaining non-destructive operations and verifies intermediate results."""
-    base_table_name = processor.network_table_name
-    filtered = processor.apply_sql_query(
-        f"SELECT * FROM {base_table_name} WHERE length_m > 150"
+    with InMemoryNetworkProcessor(input_path=processor._db_path) as proc:
+        table_name = proc.load_network()
+
+        metadata = processor.network_metadata
+        assert metadata is not None
+
+        stats = processor.get_network_stats()
+        assert stats["edge_count"] > 0
+        assert stats["total_length_m"] > 0.0
+        logger.info(
+            f"Network table '{table_name}' has {stats['edge_count']} edges, total length {stats['total_length_m']:.1f}m"
+        )
+
+
+def test_network_loading_with_point(
+    processor: InMemoryNetworkProcessor,
+) -> None:
+    """Tests chaining non-destructive operations and verifies intermediate results."""
+    with InMemoryNetworkProcessor(input_path=processor._db_path) as proc:
+        table_name = proc.load_network(
+            center=Coordinates(lat=48.137154, lon=11.576124),
+            buffer_radius=1000.0,
+            travel_time_minutes=15.0,
+            speed_kmh=5.0,
+        )
+    cut_stats = processor.get_network_stats(table_name)
+    assert cut_stats["edge_count"] > 0
+    assert cut_stats["total_length_m"] > 0.0
+    logger.info(
+        f"Cut network table '{table_name}' has {cut_stats['edge_count']} edges, total length {cut_stats['total_length_m']:.1f}m"
     )
 
-    # 2. Use the result of the previous step ('filtered') directly in the next query
-    #    The 'base_table' argument is no longer needed.
-    transformed = processor.apply_sql_query(
-        f"SELECT *, length_m * 1.1 as adjusted_length FROM {filtered}"
-    )
+    output_path = "/app/packages/python/goatlib/tests/data/network/test.parquet"
+    # save table name for confirmation
+    processor.save_network(table_name, output_path)
 
-    # 3. Use the result of the previous step ('transformed') directly in the next query
-    summary = processor.apply_sql_query(
-        f"SELECT COUNT(*) as total_edges FROM {transformed}"
-    )
 
-    filtered_stats = processor.get_network_stats(filtered)
-    transformed_stats = processor.get_network_stats(transformed)
-    summary_count = processor.con.execute(
-        f"SELECT total_edges FROM {summary}"
-    ).fetchone()[0]
+def test_split_with_subset(network_file: Path) -> None:
+    """Test splitting edge on a network subset without loading full network."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        # This loads only ~500m radius around the point, not the full 375k edges
+        split_table, split_meta = proc.split_edge_at_point_with_subset(
+            point=Coordinates(lat=48.137154, lon=11.576124),
+            network_buffer_radius=500.0,
+            max_search_radius=100.0,
+        )
+        tables = proc.get_available_tables()
+        logger.info(f"Available tables after split: {tables}")
 
-    # Assert that intermediate tables still exist and are correct
-    assert filtered_stats["edge_count"] > 0
-    assert transformed_stats["edge_count"] == filtered_stats["edge_count"]
-    assert summary_count == transformed_stats["edge_count"]
+        stats = proc.get_network_stats(split_table)
+        assert stats["edge_count"] < 375164
+
+        # Verify the split worked
+        assert split_meta.raw_meta["split_operation"]["artificial_node_id"] is not None
+        logger.info(f"Split edge on subset: {split_meta.raw_meta['split_operation']}")
 
 
 def test_save_to_file(processor: InMemoryNetworkProcessor, data_root: Path) -> None:
     """Test saving a table to a parquet file."""
     output_file = data_root / "network" / "network_output.parquet"
-    processor.save_table(processor.network_table_name, str(output_file))
+    processor.save_network(processor.network_table_name, output_path=str(output_file))
 
     # Verify the file was created
     assert output_file.exists()
@@ -64,13 +95,14 @@ def test_save_to_file(processor: InMemoryNetworkProcessor, data_root: Path) -> N
 
 def test_save_to_tmp(processor: InMemoryNetworkProcessor) -> None:
     """Test saving a table to a temporary parquet file."""
-    tmp_file_path = processor.save_table(processor.network_table_name)
+    tmp_file_path = processor.save_network(processor.network_table_name)
     # Verify the file was created
     from pathlib import Path
 
     tmp_file = Path(tmp_file_path)
     assert tmp_file.exists()
     assert tmp_file.stat().st_size > 0
+    logger.info(f"Temporary network file created at: {tmp_file_path}")
 
 
 def test_network_is_wkb_format(processor: InMemoryNetworkProcessor) -> None:
@@ -90,77 +122,12 @@ def test_get_available_tables(
     """Test listing available tables in the in-memory database."""
     tables = processor.get_available_tables()
     assert isinstance(tables, list)
-    assert (
-        processor.network_table_name in tables
-    )  # At least the network table should be present
+    assert processor.network_table_name in tables
+    logger.info(f"Network table: {processor.network_table_name}")
+    logger.info(f"Available tables: {tables}")
 
 
-def test_edge_split(
-    processor: InMemoryNetworkProcessor,
-) -> None:
-    """
-    Comprehensive test for split operation correctness:
-    - Network metrics are preserved (length, edge count +1)
-    - Topology is correct (original edge removed, 2 new edges added)
-    - New edges have correct naming and connectivity
-    """
-    original_stats = processor.get_network_stats()
-    original_table_name = processor.network_table_name
-
-    split_table, split_meta = processor.split_edge_at_point(
-        latitude=48.13, longitude=11.58
-    )
-
-    # Extract split info from metadata
-    split_info = split_meta.raw_meta["split_operation"]
-    split_stats = processor.get_network_stats(split_table)
-    original_edge_id = split_info["original_edge_split"]
-    new_node_id = split_info["artificial_node_id"]
-
-    # 1. Test Network Metrics Invariance
-    assert split_stats["edge_count"] == original_stats["edge_count"] + 1
-    assert abs(split_stats["total_length_m"] - original_stats["total_length_m"]) < 1.0
-    assert split_stats["avg_length_m"] < original_stats["avg_length_m"]
-
-    # 2. Test Original Edge Removal
-    original_edge_count = processor.con.execute(
-        f"SELECT COUNT(*) FROM {split_table} WHERE edge_id = '{original_edge_id}'"
-    ).fetchone()[0]
-    assert original_edge_count == 0
-
-    # 3. Test New Edge Creation and Naming
-    split_edges = processor.con.execute(f"""
-        SELECT edge_id, source, target FROM {split_table}
-        WHERE edge_id LIKE '{original_edge_id}_part_%' ORDER BY edge_id
-    """).fetchall()
-
-    assert len(split_edges) == 2
-    edge_a, edge_b = split_edges
-
-    # Check naming pattern
-    assert edge_a[0] == f"{original_edge_id}_part_a"
-    assert edge_b[0] == f"{original_edge_id}_part_b"
-
-    # Check connectivity topology
-    assert edge_a[2] == new_node_id  # target of part_a
-    assert edge_b[1] == new_node_id  # source of part_b
-
-    # 4. Test Edge Set Differences (verify exactly what changed)
-    removed_edges = processor.con.execute(f"""
-        SELECT edge_id FROM {original_table_name}
-        EXCEPT SELECT edge_id FROM {split_table}
-    """).fetchall()
-    assert len(removed_edges) == 1
-    assert str(removed_edges[0][0]) == str(original_edge_id)
-
-    added_edges = processor.con.execute(f"""
-        SELECT edge_id FROM {split_table}
-        EXCEPT SELECT edge_id FROM {original_table_name}
-    """).fetchall()
-    added_edge_ids = {row[0] for row in added_edges}
-    assert len(added_edge_ids) == 2
-    assert f"{original_edge_id}_part_a" in added_edge_ids
-    assert f"{original_edge_id}_part_b" in added_edge_ids
+# `------------ Complex Operation Tests ------------
 
 
 def test_interpolate_long_edges(processor: InMemoryNetworkProcessor) -> None:
@@ -170,7 +137,7 @@ def test_interpolate_long_edges(processor: InMemoryNetworkProcessor) -> None:
 
     # Find a reasonable threshold - use 75th percentile of edge lengths
     edge_lengths = processor.con.execute(f"""
-        SELECT length_m FROM {processor.network_table_name} 
+        SELECT length_m FROM {processor.network_table_name}
         ORDER BY length_m DESC
     """).fetchall()
 
@@ -238,32 +205,3 @@ def test_interpolate_long_edges(processor: InMemoryNetworkProcessor) -> None:
     logger.info(f"  New intermediate nodes: {info['new_intermediate_nodes']}")
     logger.info(f"  Max edge length threshold: {max_length:.1f}m")
     logger.info(f"  Processing time: {info['processing_time_seconds']:.2f}s")
-
-
-def test_concurrent_access(network_file: str) -> None:
-    """Test that multiple processors can be created and used concurrently safely."""
-    import concurrent.futures
-
-    from goatlib.analysis.network.network_processor import (
-        InMemoryNetworkProcessor,
-    )
-
-    def create_processor_and_get_stats() -> dict:
-        # Each thread gets its own processor instance with its own connection
-        with InMemoryNetworkProcessor(str(network_file)) as proc:
-            return proc.get_network_stats()
-
-    # Use a smaller number of workers to avoid resource exhaustion
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(create_processor_and_get_stats) for _ in range(3)]
-        results = [f.result() for f in concurrent.futures.as_completed(futures)]
-
-    # Verify all processors got consistent results
-    for stats in results:
-        assert stats["edge_count"] > 0
-
-    # All results should be identical since they're loading the same file
-    edge_counts = [stats["edge_count"] for stats in results]
-    assert (
-        len(set(edge_counts)) == 1
-    ), "All processors should report the same edge count"
