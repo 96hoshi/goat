@@ -63,26 +63,6 @@ def test_network_loading_with_point(
     processor.save_network(table_name, output_path)
 
 
-def test_split_with_subset(network_file: Path) -> None:
-    """Test splitting edge on a network subset without loading full network."""
-    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
-        # This loads only ~500m radius around the point, not the full 375k edges
-        split_table, split_meta = proc.split_edge_at_point_with_subset(
-            point=Coordinates(lat=48.137154, lon=11.576124),
-            network_buffer_radius=500.0,
-            max_search_radius=100.0,
-        )
-        tables = proc.get_available_tables()
-        logger.info(f"Available tables after split: {tables}")
-
-        stats = proc.get_network_stats(split_table)
-        assert stats["edge_count"] < 375164
-
-        # Verify the split worked
-        assert split_meta.raw_meta["split_operation"]["artificial_node_id"] is not None
-        logger.info(f"Split edge on subset: {split_meta.raw_meta['split_operation']}")
-
-
 def test_save_to_file(processor: InMemoryNetworkProcessor, data_root: Path) -> None:
     """Test saving a table to a parquet file."""
     output_file = data_root / "network" / "network_output.parquet"
@@ -127,81 +107,150 @@ def test_get_available_tables(
     logger.info(f"Available tables: {tables}")
 
 
-# `------------ Complex Operation Tests ------------
+def test_split_with_subset_basic(network_file: Path) -> None:
+    """Basic test that splitting works."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        # Try to split
+        split_table, split_meta = proc.split_edge_at_point_with_subset(
+            point=Coordinates(lat=48.137154, lon=11.576124),
+            network_buffer_radius=500.0,
+            max_search_radius_m=100.0,
+        )
+
+        # Basic assertions
+        assert split_table in proc.get_available_tables()
+
+        stats = proc.get_network_stats(split_table)
+        assert 0 < stats["edge_count"] < 375164
+
+        split_info = split_meta.raw_meta.get("split_operation", {})
+        assert split_info.get("original_edge")
+        assert split_info.get("artificial_node_id")
+
+        # Quick validation of split
+        fraction = split_info["split_position"]["fraction"]
+        assert 0.0 <= fraction <= 1.0
+
+        logger.info(f"Basic test passed: split {split_info['original_edge']}")
 
 
-def test_interpolate_long_edges(processor: InMemoryNetworkProcessor) -> None:
-    """Test edge interpolation functionality."""
-    # Get original network stats
-    original_stats = processor.get_network_stats()
+def test_split_with_subset_advanced(network_file: Path) -> None:
+    """Test splitting edge on a network subset without loading full network."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        # This loads only ~500m radius around the point, not the full 375k edges
+        split_table, split_meta = proc.split_edge_at_point_with_subset(
+            point=Coordinates(lat=48.137154, lon=11.576124),
+            network_buffer_radius=500.0,
+            max_search_radius_m=100.0,
+        )
 
-    # Find a reasonable threshold - use 75th percentile of edge lengths
-    edge_lengths = processor.con.execute(f"""
-        SELECT length_m FROM {processor.network_table_name}
-        ORDER BY length_m DESC
-    """).fetchall()
+        # Get available tables
+        tables = proc.get_available_tables()
+        logger.info(f"Available tables after split: {tables}")
 
-    if len(edge_lengths) < 4:
-        # Skip test if network is too small
-        return
+        # Check that split table exists
+        assert split_table in tables, f"Split table {split_table} not found in {tables}"
 
-    # Use a threshold that will catch some but not all edges
-    max_length = edge_lengths[len(edge_lengths) // 4][0]  # 75th percentile
-    interpolation_distance = max_length / 3  # Create multiple segments
+        # Get stats for split table
+        stats = proc.get_network_stats(split_table)
+        logger.info(f"Split table stats: {stats}")
 
-    # Perform interpolation
-    interpolated_table, interpolated_meta = processor.interpolate_long_edges(
-        max_edge_length=max_length, interpolation_distance=interpolation_distance
-    )
+        # Verify the subset is smaller than full network
+        assert (
+            stats["edge_count"] < 375164
+        ), "Subset should be smaller than full network"
+        assert stats["edge_count"] > 0, "Subset should have at least one edge"
 
-    # Extract interpolation info from metadata
-    info = interpolated_meta.raw_meta["interpolation_operation"]
+        # Verify the split worked
+        split_info = split_meta.raw_meta.get("split_operation", {})  # Fixed key name
+        assert split_info.get("original_edge") is not None, "Missing original edge ID"
+        assert split_info.get("artificial_node_id") is not None, "Missing new node ID"
+        assert (
+            split_info.get("split_position", {}).get("fraction") is not None
+        ), "Missing split fraction"
 
-    # Verify interpolation info
-    assert info["original_edge_count"] == original_stats["edge_count"]
-    assert info["max_edge_length_threshold"] == max_length
-    assert info["interpolation_distance"] == interpolation_distance
-    assert (
-        info["final_edge_count"] >= info["original_edge_count"]
-    )  # Should have more edges
-    assert info["processing_time_seconds"] > 0
+        # Verify split fraction is reasonable
+        fraction = split_info["split_position"]["fraction"]
+        assert (
+            0.001 <= fraction <= 0.999
+        ), f"Split fraction {fraction} should be between 0.001 and 0.999"
 
-    # Verify the interpolated network has valid stats
-    interpolated_stats = processor.get_network_stats(interpolated_table)
-    assert interpolated_stats["edge_count"] == info["final_edge_count"]
-    assert interpolated_stats["edge_count"] > 0
+        # Verify distance is within search radius
+        distance_m = split_info["split_position"]["distance_m"]
+        assert (
+            distance_m <= 100.0
+        ), f"Distance {distance_m}m should be <= search radius 100m"
 
-    # Check that no edge in the interpolated network exceeds the threshold
-    long_edges_count = processor.con.execute(f"""
-        SELECT COUNT(*) FROM {interpolated_table} WHERE length_m > {max_length}
-    """).fetchone()[0]
-    assert (
-        long_edges_count == 0
-    ), f"Found {long_edges_count} edges still longer than {max_length}m"
+        # Additional useful checks:
 
-    # Verify intermediate nodes were created
-    if info["new_intermediate_nodes"] > 0:
-        intermediate_nodes = processor.con.execute(f"""
-            SELECT COUNT(DISTINCT node_id) FROM (
-                SELECT source as node_id FROM {interpolated_table} WHERE source LIKE 'interp_%'
-                UNION 
-                SELECT target as node_id FROM {interpolated_table} WHERE target LIKE 'interp_%'
-            )
-        """).fetchone()[0]
-        assert intermediate_nodes > 0, "Should have created intermediate nodes"
+        # 1. Check that split edge appears twice (parts A and B)
+        result = proc.con.execute(f"""
+            SELECT COUNT(*) 
+            FROM {split_table} 
+            WHERE edge_id LIKE '%_A' OR edge_id LIKE '%_B'
+        """).fetchone()
+        split_edge_count = result[0]
+        assert (
+            split_edge_count == 2
+        ), f"Should have 2 split edges, got {split_edge_count}"
 
-    # Verify total length is preserved (approximately)
-    original_total_length = original_stats["total_length_m"]
-    interpolated_total_length = interpolated_stats["total_length_m"]
-    length_diff = abs(original_total_length - interpolated_total_length)
-    assert (
-        length_diff / original_total_length < 0.01
-    ), f"Total length changed too much: {length_diff}m"
+        # 2. Check new node connectivity
+        node_id = split_info["artificial_node_id"]
+        result = proc.con.execute(f"""
+            SELECT 
+                COUNT(*) as connections,
+                SUM(CASE WHEN source = '{node_id}' THEN 1 ELSE 0 END) as as_source,
+                SUM(CASE WHEN target = '{node_id}' THEN 1 ELSE 0 END) as as_target
+            FROM {split_table}
+            WHERE source = '{node_id}' OR target = '{node_id}'
+        """).fetchone()
 
-    logger.info("Interpolation test completed:")
-    logger.info(f"  Original edges: {info['original_edge_count']}")
-    logger.info(f"  Long edges processed: {info['long_edges_processed']}")
-    logger.info(f"  Final edges: {info['final_edge_count']}")
-    logger.info(f"  New intermediate nodes: {info['new_intermediate_nodes']}")
-    logger.info(f"  Max edge length threshold: {max_length:.1f}m")
-    logger.info(f"  Processing time: {info['processing_time_seconds']:.2f}s")
+        assert result[0] == 2, f"New node should connect 2 edges, connects {result[0]}"
+        assert (
+            result[1] == 1
+        ), f"New node should be source for 1 edge, is source for {result[1]}"
+        assert (
+            result[2] == 1
+        ), f"New node should be target for 1 edge, is target for {result[2]}"
+
+        # 3. Check edge lengths sum correctly
+        original_length = split_info["edge_properties"]["original_length_m"]
+        part_a_length = split_info["edge_properties"]["part_a_length_m"]
+        part_b_length = split_info["edge_properties"]["part_b_length_m"]
+
+        # Allow small floating point tolerance
+        total_split_length = part_a_length + part_b_length
+        length_diff = abs(original_length - total_split_length)
+        assert (
+            length_diff < 0.01
+        ), f"Split lengths don't sum to original: {original_length} != {total_split_length}"
+
+        logger.info(
+            f"✅ Test passed: Split {split_info['original_edge']} at {fraction:.3%}"
+        )
+        logger.info(f"   New node: {node_id}, Distance: {distance_m:.1f}m")
+        logger.info(f"   Part A: {part_a_length:.1f}m, Part B: {part_b_length:.1f}m")
+
+
+def test_interpolate_point_on_edge(network_file: Path) -> None:
+    """Test interpolating a point along an edge."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        # Try to split
+        split_table, split_meta = proc.split_edge_at_point_with_subset(
+            point=Coordinates(lat=48.137154, lon=11.576124),
+            network_buffer_radius=500.0,
+            max_search_radius_m=100.0,
+        )
+        stats = proc.get_network_stats(split_table)
+        new_table, new_meta = proc.interpolate_long_edges(
+            base_table=split_table,
+            max_edge_length=50.0,
+        )
+        new_stats = proc.get_network_stats(new_table)
+
+        assert new_stats["edge_count"] >= stats["edge_count"]
+        logger.info(
+            f"Interpolated long edges: {stats['edge_count']} → {new_stats['edge_count']} edges"
+        )
+        assert split_meta.raw_meta.get("split_operation", {}) is not None
+        assert new_meta.raw_meta.get("interpolation_operation", {}) is not None

@@ -1,11 +1,14 @@
 import logging
-import uuid
+import math
 import time
-from typing import Any, Dict, Tuple
+import uuid
+from typing import Any, Dict, Set
 
 from goatlib.analysis.core.base import AnalysisTool
 from goatlib.io.utils import Metadata
 from goatlib.routing.schemas.base import Coordinates
+
+SPLIT_EPSILON = 1e-6  # Configurable threshold
 
 logger = logging.getLogger(__name__)
 
@@ -14,35 +17,30 @@ logger = logging.getLogger(__name__)
 
 class InMemoryNetworkProcessor(AnalysisTool):
     """
-    High-performance in-memory network processor for routing.
+    In-memory network processor for routing.
     """
 
     def __init__(self, input_path: str) -> None:
-        """Initializes the processor. Requires network parameters to be valid."""
         super().__init__(db_path=input_path)
         self._is_loaded = False
         self._network_table_name: str
         self._meta: Metadata
+        self._created_tables: Set[str] = set()  # Track tables we create
+        self._original_tables: Set[str] = set()  # Tables that existed at init
 
     def __enter__(self) -> "InMemoryNetworkProcessor":
-        """Enters the context, loading the network and returning the processor instance."""
-        # Don't load network yet - wait for user to call create_buffered_subset
-        # This allows working with only a subset of the network for performance
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exits the context, automatically cleaning up all database resources."""
         super().cleanup()
 
     @property
     def network_table_name(self) -> str:
-        """Get the name of the loaded network table."""
         self._ensure_loaded()
         return self._network_table_name
 
     @property
     def network_metadata(self) -> Metadata:
-        """Get metadata about the loaded network."""
         self._ensure_loaded()
         return self._meta
 
@@ -50,6 +48,19 @@ class InMemoryNetworkProcessor(AnalysisTool):
         """Ensure the network is loaded before performing operations."""
         if not self._is_loaded:
             raise RuntimeError("Network not loaded. Call load_network() first.")
+
+    def _get_all_tables_safe(self) -> list[str]:
+        """Safely get all table names."""
+        try:
+            result = self.con.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'main'
+                ORDER BY table_name
+            """).fetchall()
+            return [row[0] for row in result] if result else []
+        except:
+            return []
 
     def get_network_stats(self, table_name: str = None) -> Dict[str, Any]:
         """Get basic statistics about the network.
@@ -77,9 +88,10 @@ class InMemoryNetworkProcessor(AnalysisTool):
             "max_length_m": float(result[4]) if result[4] else 0,
         }
 
-    def get_available_tables(self) -> list[str]:
-        result = self.con.execute("SHOW TABLES").fetchall()
-        return [row[0] for row in result]
+    # def _get_available_tables(self) -> list[str]:
+    #     """Returns a list of available table names in the DuckDB database. used for testing purposes."""
+    #     result = self.con.execute("SHOW TABLES").fetchall()
+    #     return [row[0] for row in result]
 
     def apply_sql_query(
         self, sql_query: str, result_table: str = "query_result"
@@ -113,7 +125,6 @@ class InMemoryNetworkProcessor(AnalysisTool):
         logger.info(f"Network loaded into table: {self._network_table_name}")
 
         # Validate required columns exist
-        # TODO check if this is made in import_input
         if not self._meta.geometry_column:
             raise ValueError("Network file must have a geometry column")
 
@@ -130,45 +141,36 @@ class InMemoryNetworkProcessor(AnalysisTool):
             buffer_distance = travel_time_minutes * (speed_kmh * 1000 / 60)
 
         # Convert meters to degrees (approximate at the given latitude)
-        # DuckDB spatial doesn't have ST_DWithin_Sphere, so we convert to degrees
-        import math
 
         lat_rad = math.radians(center.lat)
         meters_per_degree_lat = 111320  # roughly constant
         meters_per_degree_lon = 111320 * math.cos(lat_rad)
-        # Use average for simplicity
         buffer_degrees = buffer_distance / (
             (meters_per_degree_lat + meters_per_degree_lon) / 2
         )
 
         logger.info(
-            f"Creating buffered network subset with buffer distance: {buffer_distance:.2f} meters "
-            f"(~{buffer_degrees:.6f} degrees)"
+            f"Creating buffered network subset with buffer distance: {buffer_distance:.2f} m"
         )
 
         # Create buffered network
         subset_table_name = f"routing_network_{uuid.uuid4().hex[:8]}"
-
+        # circular buffer around point
         subset_query = f"""
             CREATE TABLE {subset_table_name} AS
             SELECT t.*
             FROM {self._network_table_name} t
-            WHERE ST_Intersects(
+            WHERE ST_DWithin(
                 t.{self._meta.geometry_column},
-                ST_Buffer(
-                    ST_Point({center.lon}, {center.lat}),
-                    {buffer_degrees}
-                )
+                ST_MakePoint({center.lon}, {center.lat}), {buffer_degrees}
             )
             """
-
-        import time
 
         start = time.time()
         self.con.execute(subset_query)
         elapsed = time.time() - start
 
-        logger.info(f"Network subset created in {elapsed:.3f} seconds")
+        logger.info(f"Network subset created in {round(elapsed * 1000, 1)} ms")
         self._is_loaded = True
 
         return subset_table_name
@@ -177,8 +179,8 @@ class InMemoryNetworkProcessor(AnalysisTool):
     def split_edge_at_point_with_subset(
         self,
         point: Coordinates,
-        network_buffer_radius: float = 500.0,
-        max_search_radius: float = 20.0,
+        network_buffer_radius: float = 1000.0,
+        max_search_radius_m: float = 20.0,
     ) -> tuple[str, Metadata]:
         """
         Loads a network subset around a point and splits the nearest edge.
@@ -187,10 +189,8 @@ class InMemoryNetworkProcessor(AnalysisTool):
 
         Args:
             point: Coordinates where to split
-            network_buffer_radius: Radius in meters to load network around the point (default: 500m)
-            max_search_radius: Maximum search radius in meters for finding closest edge (default: 200m)
-            include_stats: Whether to include edge count statistics
-
+            network_buffer_radius: Radius in meters to load network around the point
+            max_search_radius_m: Maximum search radius in meters for finding closest edge
         Returns:
             Tuple of (table_name, metadata) with split operation details
         """
@@ -206,292 +206,316 @@ class InMemoryNetworkProcessor(AnalysisTool):
         return self.split_edge_at_point(
             point=point,
             source_table=subset_table,
-            max_search_radius=max_search_radius,
+            max_search_radius_m=max_search_radius_m,
         )
 
     def split_edge_at_point(
         self,
         point: Coordinates,
         source_table: str = None,
-        max_search_radius: float = 100.0,
+        max_search_radius_m: float = 100.0,
     ) -> tuple[str, Metadata]:
         """
         Finds the closest edge to a point, splits it, and creates a new network table.
 
         Args:
-            latitude: Latitude of the split point
-            longitude: Longitude of the split point
-            base_table: Source table name (defaults to main network table)
-            max_search_radius: Maximum search radius in meters
-            include_stats: Whether to include edge count statistics (default: True)
+            point: Coordinates where to start the route
+            source_table: Source table name (defaults to main network table)
+            max_search_radius_m: Maximum search radius in meters
 
         Returns:
             Tuple of (table_name, metadata) with split operation details in raw_meta
         """
-        split_table_name = f"split_network_{uuid.uuid4().hex[:8]}"
+        # Generate unique IDs
         new_node_id = f"split_node_{uuid.uuid4().hex[:8]}"
+        split_table_name = f"split_network_{uuid.uuid4().hex[:8]}"
+
+        # Set source table if not provided
+        if source_table is None:
+            source_table = self._network_table_name
+
+        # Prepare geometry references
         point_geom = f"ST_Point({point.lon}, {point.lat})"
         geom_col = self._meta.geometry_column
 
-        # First, find the closest edge using bbox optimization
-        info_query = f"""
-        WITH search_bbox AS (
-            SELECT ST_Envelope(
-                ST_Buffer({point_geom}, {max_search_radius})
-            ) AS bbox
-        ), candidate_edges AS (
-            SELECT *
-            FROM {source_table}, search_bbox
-            WHERE ST_Intersects({geom_col}, search_bbox.bbox)
-        ), closest_edge AS (
+        # Convert meters to degrees for spatial search
+        # Approximation: 1 degree ≈ 111.32 km at equator
+        search_radius_deg = max_search_radius_m / 111320.0
+
+        # QUERY 1: Find closest edge with all needed info
+        find_query = f"""
+        WITH closest AS (
             SELECT
                 edge_id,
-                ST_Distance({geom_col}, {point_geom}) AS distance,
-                ST_LineLocatePoint({geom_col}, {point_geom}) AS split_fraction,
-                {geom_col}
-            FROM candidate_edges
-            ORDER BY distance ASC
+                source,
+                target,
+                length_m,
+                cost,
+                {geom_col},
+                ST_Distance({geom_col}, {point_geom}) as dist_deg,
+                ST_LineLocatePoint({geom_col}, {point_geom}) as frac
+            FROM {source_table}
+            WHERE ST_DWithin({geom_col}, {point_geom}, {search_radius_deg})
+            ORDER BY dist_deg
             LIMIT 1
-        ), split_point_calc AS (
-            SELECT
-                edge_id,
-                split_fraction,
-                distance,
-                ST_X(ST_LineInterpolatePoint({geom_col}, split_fraction)) AS split_lon,
-                ST_Y(ST_LineInterpolatePoint({geom_col}, split_fraction)) AS split_lat
-            FROM closest_edge
         )
         SELECT
-            edge_id,
-            split_fraction,
-            split_lon,
-            split_lat,
-            distance
-        FROM split_point_calc;
+            *,
+            CASE WHEN frac BETWEEN 0.001 AND 0.999 THEN 1 ELSE 0 END as valid_split,
+            ST_X(ST_LineInterpolatePoint({geom_col}, frac)) as split_lon,
+            ST_Y(ST_LineInterpolatePoint({geom_col}, frac)) as split_lat
+        FROM closest;
         """
+
+        # Execute find query
         find_start = time.time()
-        info_res = self.con.execute(info_query).fetchone()
-
-        # Check if any edge was found
-        if not info_res or info_res[0] is None:
-            raise ValueError(
-                "No edges found. Try increasing max_search_radius or check if the point is near the network."
-            )
+        result = self.con.execute(find_query).fetchone()
         find_elapsed = time.time() - find_start
-        logger.info(f"Found closest edge in {find_elapsed:.3f}s")
 
-        # Now create the split table using the found edge
-        original_edge_id, split_fraction, split_lon, split_lat, distance = info_res
+        if not result:
+            raise ValueError(
+                f"No edge found within {max_search_radius_m}m of point ({point.lat}, {point.lon})"
+            )
 
+        if result[-3] == 0:  # valid_split column
+            raise ValueError(
+                f"Edge found but split fraction {result[7]:.6f} is too close to endpoint"
+            )
+
+        # Extract values from result
+        original_edge_id = result[0]
+        source_node = result[1]
+        target_node = result[2]
+        length_m = result[3]
+        cost_val = result[4]
+        dist_deg = result[6]
+        split_fraction = result[7]
+        split_lon = result[9]
+        split_lat = result[10]
+
+        # Convert distance to meters
+        distance_m = dist_deg * 111320.0
+
+        # QUERY 2: Split the edge efficiently
         split_query = f"""
         CREATE TABLE {split_table_name} AS
-        WITH target_edge AS (
-            -- Select the specific edge we found
-            SELECT * FROM {source_table}
-            WHERE edge_id = '{original_edge_id}'
-        ),
-        new_split_parts AS (
-            -- Create two new edge segments from the original edge at the split point
-            -- Part A: from original source to new split node
-            SELECT
-                edge_id || '_part_a' as edge_id,
-                source,
-                '{new_node_id}' as target,
-                length_m * {split_fraction} AS length_m,
-                cost * {split_fraction} AS cost,
-                ST_LineSubstring({geom_col}, 0.0, {split_fraction}) as {geom_col}
-            FROM target_edge
 
-            UNION ALL
+        -- All edges except the one being split
+        SELECT *
+        FROM {source_table}
+        WHERE edge_id != '{original_edge_id}'
 
-            -- Part B: from new split node to original target
-            SELECT
-                edge_id || '_part_b' as edge_id,
-                '{new_node_id}' as source,
-                target,
-                length_m * (1.0 - {split_fraction}) AS length_m,
-                cost * (1.0 - {split_fraction}) AS cost,
-                ST_LineSubstring({geom_col}, {split_fraction}, 1.0) as {geom_col}
-            FROM target_edge
-        )
-        -- Combine all unchanged edges with the new split edge parts
-        SELECT * FROM {source_table}
-        WHERE edge_id <> '{original_edge_id}'
         UNION ALL
-        SELECT * FROM new_split_parts;
+
+        -- Split into two parts: Source → New Node
+        SELECT
+            '{original_edge_id}_A' as edge_id,
+            source,
+            '{new_node_id}' as target,
+            ROUND(length_m * {split_fraction}, 3) as length_m,
+            ROUND(cost * {split_fraction}, 3) as cost,
+            ST_LineSubstring({geom_col}, 0.0, {split_fraction}) as {geom_col}
+        FROM {source_table}
+        WHERE edge_id = '{original_edge_id}'
+
+        UNION ALL
+
+        -- Split into two parts: New Node → Target
+        SELECT
+            '{original_edge_id}_B' as edge_id,
+            '{new_node_id}' as source,
+            target,
+            ROUND(length_m * (1.0 - {split_fraction}), 3) as length_m,
+            ROUND(cost * (1.0 - {split_fraction}), 3) as cost,
+            ST_LineSubstring({geom_col}, {split_fraction}, 1.0) as {geom_col}
+        FROM {source_table}
+        WHERE edge_id = '{original_edge_id}';
         """
 
+        # Execute split query
         split_start = time.time()
         self.con.execute(split_query)
         split_elapsed = time.time() - split_start
-        logger.info(f"Created split table in {split_elapsed:.3f}s")
 
         logger.info(
-            f"Original edge '{original_edge_id}' split at fraction {split_fraction:.6f} "
-            f"({distance:.2f}m from point) into new node '{new_node_id}'"
+            f"Edge '{original_edge_id}' split at {split_fraction:.3%} "
+            f"(~{distance_m:.1f}m from request) → Node '{new_node_id}' "
+            f"[Table: {split_table_name}] in {find_elapsed + split_elapsed:.3f}s"
         )
-        # Create metadata for the split table (copy from original)
-        split_meta = Metadata(geometry_column=self._meta.geometry_column, raw_meta={})
 
-        # Add split operation details to metadata
-        split_operation_info = {
-            "operation": "edge_split",
-            "method": "bbox_optimization",
-            "artificial_node_id": new_node_id,
-            "original_edge_split": original_edge_id,
-            "split_fraction": split_fraction,
-            "distance_to_edge": distance,
-            "max_search_radius": max_search_radius,
-            "new_node_coords": {
-                "lon": split_lon,
-                "lat": split_lat,
+        # 2. METADATA
+        split_meta = Metadata(
+            geometry_column=self._meta.geometry_column,
+            raw_meta={
+                "source_table": source_table,
+                "split_operation": {
+                    "artificial_node_id": new_node_id,
+                    "original_edge": original_edge_id,
+                    "split_position": {
+                        "fraction": split_fraction,
+                        "request_point": {"lat": point.lat, "lon": point.lon},
+                        "actual_point": {"lat": split_lat, "lon": split_lon},
+                    },
+                    "edge_properties": {
+                        "original_length_m": length_m,
+                        "part_a_length_m": round(length_m * split_fraction, 3),
+                        "part_b_length_m": round(length_m * (1 - split_fraction), 3),
+                        "original_cost": cost_val,
+                        "source_node": source_node,
+                        "target_node": target_node,
+                    },
+                    "search_params": {
+                        "max_radius_m": max_search_radius_m,
+                        "search_radius_deg": search_radius_deg,
+                        "actual_distance_m": round(distance_m, 3),
+                    },
+                    "performance": {
+                        "find_query_ms": round(find_elapsed * 1000, 1),
+                        "split_query_ms": round(split_elapsed * 1000, 1),
+                        "total_ms": round((find_elapsed + split_elapsed) * 1000, 1),
+                    },
+                },
             },
-        }
+        )
 
-        split_meta.raw_meta["split_operation"] = split_operation_info
-
-        # Warning for edge cases
-        if not (1e-9 < split_fraction < 1.0 - 1e-9):
+        # 3. VALIDATION WARNINGS
+        if split_fraction < SPLIT_EPSILON:
             logger.warning(
-                f"Split point is at or very near an existing node (fraction={split_fraction:.6f}). "
-                "The original edge was effectively replaced, not split into two new segments."
+                f"Split at start of edge (fraction={split_fraction:.6f}). "
+                f"Consider using existing node '{source_node}' instead of '{new_node_id}'."
+            )
+        elif split_fraction > 1.0 - SPLIT_EPSILON:
+            logger.warning(
+                f"Split at end of edge (fraction={split_fraction:.6f}). "
+                f"Consider using existing node '{target_node}' instead of '{new_node_id}'."
             )
 
         return split_table_name, split_meta
 
-    # def interpolate_long_edges(
-    #     self,
-    #     max_edge_length: float,
-    #     base_table: str = None,
-    #     interpolation_distance: float = None,
-    # ) -> tuple[str, Metadata]:
-    #     """
-    #     Interpolate nodes along edges that are longer than the specified threshold.
-    #     Creates actual intermediate nodes with coordinates and splits edges accordingly.
+    def interpolate_long_edges(
+        self,
+        max_edge_length: float,
+        base_table: str = None,
+        interpolation_distance: float = None,
+        include_stats: bool = False,
+    ) -> tuple[str, Metadata]:
+        """
+        Main function - creates interpolated table.
+        Stats are optional for performance.
+        """
+        source_table = base_table or self.network_table_name
+        interpolated_table = f"interpolated_network_{uuid.uuid4().hex[:8]}"
 
-    #     Args:
-    #         max_edge_length: Maximum allowed edge length in meters
-    #         base_table: Table to process (defaults to main network table)
-    #         interpolation_distance: Distance between interpolated points (defaults to max_edge_length/2)
+        if interpolation_distance is None:
+            interpolation_distance = max_edge_length / 2
 
-    #     Returns:
-    #         Tuple of (table_name, metadata) where metadata contains table schema
-    #         and interpolation details in raw_meta
-    #     """
-    #     import time
+        query = f"""
+        CREATE TABLE {interpolated_table} AS
+        WITH long_edges AS (
+            SELECT *,
+                CAST(CEIL(length_m / {interpolation_distance}) AS INTEGER) as num_segments
+            FROM {source_table}
+            WHERE length_m > {max_edge_length}
+        ),
+        interpolated_segments AS (
+            SELECT
+                edge_id || '_seg_' || CAST(segment_id AS VARCHAR) as edge_id,
+                CASE
+                    WHEN segment_id = 1 THEN CAST(source AS VARCHAR)
+                    ELSE 'interp_' || edge_id || '_' || CAST((segment_id - 1) AS VARCHAR)
+                END as source,
+                CASE
+                    WHEN segment_id = num_segments THEN CAST(target AS VARCHAR)
+                    ELSE 'interp_' || edge_id || '_' || CAST(segment_id AS VARCHAR)
+                END as target,
+                length_m / num_segments as length_m,
+                cost / num_segments as cost,
+                ST_LineSubstring(
+                    {self._meta.geometry_column},
+                    (segment_id - 1.0) / num_segments,
+                    segment_id / num_segments
+                ) as {self._meta.geometry_column}
+            FROM long_edges
+            CROSS JOIN generate_series(1, num_segments) as t(segment_id)
+        )
+        SELECT edge_id, source, target, length_m, cost, {self._meta.geometry_column}
+        FROM {source_table}
+        WHERE length_m <= {max_edge_length}
+        UNION ALL
+        SELECT edge_id, source, target, length_m, cost, {self._meta.geometry_column}
+        FROM interpolated_segments
+        ORDER BY edge_id;
+        """
+        start_time = time.time()
+        self.con.execute(query)
+        processing_time = time.time() - start_time
 
-    #     start_time = time.time()
-    #     self._ensure_loaded()
-    #     source_table = base_table or self.network_table_name
-    #     interpolated_table = self._generate_table_name("interpolated_network")
+        logger.info(
+            f"MAIN Interpolated network created: {interpolated_table} "
+            f"in {processing_time:.3f}s"
+        )
 
-    #     # Default interpolation distance
-    #     if interpolation_distance is None:
-    #         interpolation_distance = max_edge_length / 2
+        # Create metadata
+        meta = Metadata(
+            geometry_column=self._meta.geometry_column,
+            raw_meta={
+                "interpolation_operation": {
+                    "table_name": interpolated_table,
+                    "source_table": source_table,
+                    "interpolation_params": {
+                        "max_edge_length": max_edge_length,
+                        "interpolation_distance": interpolation_distance,
+                    },
+                }
+            },
+        )
+        if include_stats:
+            stats = self._get_interpolation_stats(table_name=interpolated_table)
+            meta.raw_meta["interpolation_operation"].update(stats)
 
-    #     # Use metadata geometry column for dynamic column handling
-    #     geom_column = self.meta.geometry_column
+        return interpolated_table, meta
 
-    #     # Combined query: create table and get statistics in one go
-    #     interpolation_query = f"""
-    #     CREATE TABLE {interpolated_table} AS
-    #     WITH original_stats AS (
-    #         SELECT
-    #             COUNT(*) as original_edges,
-    #             COUNT(*) FILTER (WHERE length_m > {max_edge_length}) as long_edges_count
-    #         FROM {source_table}
-    #     ),
-    #     long_edges AS (
-    #         -- Identify edges that need interpolation and calculate segments needed
-    #         SELECT *,
-    #                CAST(CEIL(length_m / {interpolation_distance}) AS INTEGER) as num_segments
-    #         FROM {source_table}
-    #         WHERE length_m > {max_edge_length}
-    #     ),
-    #     interpolated_segments AS (
-    #         -- Generate new edges with intermediate nodes
-    #         SELECT
-    #             edge_id || '_seg_' || CAST(segment_id AS VARCHAR) as edge_id,
-    #             CASE
-    #                 WHEN segment_id = 1 THEN CAST(source AS VARCHAR)
-    #                 ELSE 'interp_' || edge_id || '_' || CAST((segment_id - 1) AS VARCHAR)
-    #             END as source,
-    #             CASE
-    #                 WHEN segment_id = num_segments THEN CAST(target AS VARCHAR)
-    #                 ELSE 'interp_' || edge_id || '_' || CAST(segment_id AS VARCHAR)
-    #             END as target,
-    #             length_m / num_segments as length_m,
-    #             cost / num_segments as cost,
-    #             ST_LineSubstring(
-    #                 {geom_column},
-    #                 (segment_id - 1.0) / num_segments,
-    #                 segment_id / num_segments
-    #             ) as {geom_column}
-    #         FROM long_edges
-    #         CROSS JOIN generate_series(1, num_segments) as t(segment_id)
-    #     )
-    #     -- Combine short edges (unchanged) with interpolated segments
-    #     SELECT edge_id, source, target, length_m, cost, {geom_column}
-    #     FROM {source_table}
-    #     WHERE length_m <= {max_edge_length}
+    def _get_interpolation_stats(
+        self,
+        table_name: str,
+    ) -> Dict[str, Any]:
+        """Get statistics about the interpolation operation."""
+        stats_query = f"""
+        WITH stats AS (
+            SELECT
+                COUNT(*) as total_edges,
+                COUNT(*) FILTER (WHERE edge_id LIKE '%_seg_%') as segments_created,
+                MAX(length_m) as max_segment_length,
+                SUM(length_m) as total_length
+            FROM {table_name}
+        ),
+        node_stats AS (
+            SELECT
+                COUNT(DISTINCT source) + COUNT(DISTINCT target) as total_nodes,
+                COUNT(DISTINCT source) FILTER (WHERE source LIKE 'interp_%') +
+                COUNT(DISTINCT target) FILTER (WHERE target LIKE 'interp_%') as new_nodes
+            FROM {table_name}
+        )
+        SELECT
+            s.total_edges,
+            s.segments_created,
+            s.max_segment_length,
+            s.total_length,
+            ns.new_nodes,
+            ns.total_nodes
+        FROM stats s, node_stats ns;
+        """
 
-    #     UNION ALL
+        stats_result = self.con.execute(stats_query).fetchone()
 
-    #     SELECT edge_id, source, target, length_m, cost, {geom_column}
-    #     FROM interpolated_segments
-    #     ORDER BY edge_id;
-    #     """
-
-    #     self.con.execute(interpolation_query)
-    #     processing_time = time.time() - start_time
-
-    #     # Get statistics in single optimized query
-    #     stats_query = f"""
-    #     WITH original_stats AS (
-    #         SELECT
-    #             COUNT(*) as original_edges,
-    #             COUNT(*) FILTER (WHERE length_m > {max_edge_length}) as long_edges_count
-    #         FROM {source_table}
-    #     ),
-    #     new_stats AS (
-    #         SELECT COUNT(*) as new_edges FROM {interpolated_table}
-    #     ),
-    #     node_stats AS (
-    #         SELECT
-    #             COUNT(DISTINCT source) + COUNT(DISTINCT target) as total_nodes,
-    #             COUNT(DISTINCT source) FILTER (WHERE source LIKE 'interp_%') +
-    #             COUNT(DISTINCT target) FILTER (WHERE target LIKE 'interp_%') as new_nodes
-    #         FROM {interpolated_table}
-    #     )
-    #     SELECT
-    #         o.original_edges,
-    #         o.long_edges_count,
-    #         n.new_edges,
-    #         ns.new_nodes,
-    #         ns.total_nodes
-    #     FROM original_stats o, new_stats n, node_stats ns;
-    #     """
-
-    #     stats_result = self.con.execute(stats_query).fetchone()
-
-    #     # Create metadata for the interpolated table using fast path
-    #     interpolated_meta = self._create_metadata_from_template(interpolated_table)
-
-    #     # Embed interpolation details in raw_meta
-    #     interpolated_meta.raw_meta = interpolated_meta.raw_meta or {}
-    #     interpolated_meta.raw_meta["interpolation_operation"] = {
-    #         "original_edge_count": stats_result[0],
-    #         "long_edges_processed": stats_result[1],
-    #         "final_edge_count": stats_result[2],
-    #         "new_intermediate_nodes": stats_result[3],
-    #         "total_nodes": stats_result[4],
-    #         "edges_added": stats_result[2] - stats_result[0],
-    #         "max_edge_length_threshold": max_edge_length,
-    #         "interpolation_distance": interpolation_distance,
-    #         "processing_time_seconds": processing_time,
-    #     }
-
-    #     return interpolated_table, interpolated_meta
+        return {
+            "final_edge_count": stats_result[0],
+            "segments_created": stats_result[1],
+            "max_segment_length_m": round(stats_result[2], 2),
+            "total_length_m": round(stats_result[3], 2),
+            "new_intermediate_nodes": stats_result[4],
+            "total_nodes": stats_result[5],
+        }
 
     # File I/O Methods
     def save_network(
