@@ -1,7 +1,6 @@
 import logging
 from pathlib import Path
 
-import pytest
 from goatlib.analysis.network.network_processor import (
     InMemoryNetworkProcessor,
 )
@@ -10,247 +9,254 @@ from goatlib.routing.schemas.base import Coordinates
 logger = logging.getLogger(__name__)
 
 
-@pytest.fixture
-def processor(network_file: Path) -> InMemoryNetworkProcessor:
-    """A pytest fixture that yields a processor within a context manager."""
+def test_network_loading(network_file: Path) -> None:
+    """Test basic network loading without specific coordinates."""
     with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
-        proc.load_network()
-        yield proc
-    # Cleanup is handled automatically as the 'with' block exits
-
-
-# ------------ Test Cases ------------
-
-
-def test_network_loading(
-    processor: InMemoryNetworkProcessor,
-) -> None:
-    """Tests chaining non-destructive operations and verifies intermediate results."""
-    with InMemoryNetworkProcessor(input_path=processor._db_path) as proc:
-        table_name = proc.load_network()
-
-        metadata = processor.network_metadata
+        # Test metadata loading
+        metadata = proc.metadata
         assert metadata is not None
+        assert metadata.geometry_column == "geometry"
+        assert len(metadata.columns) > 0
 
-        stats = processor.get_network_stats()
-        assert stats["edge_count"] > 0
-        assert stats["total_length_m"] > 0.0
-        logger.info(
-            f"Network table '{table_name}' has {stats['edge_count']} edges, total length {stats['total_length_m']:.1f}m"
-        )
+        table_name = proc.load_network()
+        assert table_name is not None
+
+        # Verify table exists and has data
+        count = proc.con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        assert count > 0, "Network should have loaded some data"
+
+        logger.info(f"Network table '{table_name}' loaded with {count} sample edges")
 
 
-def test_network_loading_with_point(
-    processor: InMemoryNetworkProcessor,
-) -> None:
-    """Tests chaining non-destructive operations and verifies intermediate results."""
-    with InMemoryNetworkProcessor(input_path=processor._db_path) as proc:
+def test_network_loading_with_point(network_file: Path) -> None:
+    """Test network loading with spatial filtering around a specific point."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        # Load network subset around a specific point
         table_name = proc.load_network(
             center=Coordinates(lat=48.137154, lon=11.576124),
             buffer_radius=1000.0,
-            travel_time_minutes=15.0,
-            speed_kmh=5.0,
         )
-    cut_stats = processor.get_network_stats(table_name)
-    assert cut_stats["edge_count"] > 0
-    assert cut_stats["total_length_m"] > 0.0
-    logger.info(
-        f"Cut network table '{table_name}' has {cut_stats['edge_count']} edges, total length {cut_stats['total_length_m']:.1f}m"
-    )
 
-    output_path = "/app/packages/python/goatlib/tests/data/network/test.parquet"
-    # save table name for confirmation
-    processor.save_network(table_name, output_path)
+        # Verify the filtered network
+        count = proc.con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        assert count > 0, "Filtered network should have edges"
 
+        # Verify spatial filtering worked
+        sample = proc.con.execute(
+            f"SELECT edge_id, source, target, length_m FROM {table_name} LIMIT 1"
+        ).fetchone()
+        assert sample is not None, "Should have at least one edge"
+        assert sample[3] > 0, "Edge should have positive length"
 
-def test_save_to_file(processor: InMemoryNetworkProcessor, data_root: Path) -> None:
-    """Test saving a table to a parquet file."""
-    output_file = data_root / "network" / "network_output.parquet"
-    processor.save_network(processor.network_table_name, output_path=str(output_file))
-
-    # Verify the file was created
-    assert output_file.exists()
-    assert output_file.stat().st_size > 0
+        logger.info(f"Filtered network table '{table_name}' has {count} edges")
 
 
-def test_save_to_tmp(processor: InMemoryNetworkProcessor) -> None:
-    """Test saving a table to a temporary parquet file."""
-    tmp_file_path = processor.save_network(processor.network_table_name)
-    # Verify the file was created
+def test_prepare_routing_network(network_file: Path) -> None:
+    """Test the core routing network preparation functionality."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        start_point = Coordinates(lat=48.137154, lon=11.576124)
+
+        # Test routing network preparation
+        output_path, new_node_id = proc.prepare_routing_network(
+            start_point=start_point, buffer_radius=500.0
+        )
+
+        # Verify outputs
+        assert output_path.endswith(".parquet"), "Should return parquet file path"
+        assert isinstance(new_node_id, int), "Should return integer node ID"
+        assert new_node_id > 0, "Node ID should be positive"
+
+        # Verify the output file was created
+        import os
+
+        assert os.path.exists(output_path), "Output file should exist"
+
+        # Clean up
+        os.unlink(output_path)
+
+        logger.info(f"Successfully prepared routing network with node {new_node_id}")
+
+
+def test_network_geometry_format(network_file: Path) -> None:
+    """Test that network geometries are properly handled."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        # Load small network subset
+        table_name = proc.load_network(
+            center=Coordinates(lat=48.137154, lon=11.576124), buffer_radius=200.0
+        )
+
+        # Check geometry column exists and has data
+        geometry_sample = proc.con.execute(
+            f"SELECT geometry FROM {table_name} LIMIT 1"
+        ).fetchone()[0]
+
+        assert geometry_sample is not None, "Geometry should not be null"
+        assert isinstance(geometry_sample, bytes), "Geometry should be in binary format"
+
+        # Test conversion to text format
+        wkt_sample = proc.con.execute(
+            f"SELECT ST_AsText(geometry) FROM {table_name} LIMIT 1"
+        ).fetchone()[0]
+
+        assert wkt_sample is not None, "WKT conversion should work"
+        assert isinstance(wkt_sample, str), "WKT should be string"
+        assert "LINESTRING" in wkt_sample.upper(), "Should be LineString geometry"
+
+        logger.info(f"Geometry format verified: {wkt_sample[:50]}...")
+
+
+def test_interpolate_long_edges(network_file: Path) -> None:
+    """Test edge interpolation functionality."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        # Load network subset
+        subset_table = proc.load_network(
+            center=Coordinates(lat=48.137154, lon=11.576124), buffer_radius=500.0
+        )
+
+        # Get edge count before interpolation
+        count_before = proc.con.execute(
+            f"SELECT COUNT(*) FROM {subset_table}"
+        ).fetchone()[0]
+
+        # Interpolate long edges
+        interp_table, interp_meta = proc.interpolate_long_edges(
+            max_edge_length=100.0, base_table=subset_table
+        )
+
+        # Get edge count after interpolation
+        count_after = proc.con.execute(
+            f"SELECT COUNT(*) FROM {interp_table}"
+        ).fetchone()[0]
+
+        # Verify interpolation worked
+        assert (
+            count_after >= count_before
+        ), "Should have same or more edges after interpolation"
+        assert interp_meta is not None, "Should return metadata"
+        assert interp_meta.geometry_column == "geometry"
+
+        logger.info(f"Interpolated {count_before} -> {count_after} edges")
+
+
+def test_split_architecture_performance(network_file: Path) -> None:
+    """Test the split architecture for loading vs processing performance."""
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        start_point = Coordinates(lat=48.137154, lon=11.576124)
+
+        # Test 1: Load network first
+        import time
+
+        t1 = time.perf_counter()
+        subset_table = proc.load_network(center=start_point, buffer_radius=400.0)
+        t2 = time.perf_counter()
+        load_time = (t2 - t1) * 1000
+
+        # Test 2: Reuse loaded data for routing preparation
+        t3 = time.perf_counter()
+        output_path, node_id = proc.prepare_routing_network(
+            start_point=start_point,
+            buffer_radius=400.0,
+            subset_table=subset_table,  # Reuse loaded data
+        )
+        t4 = time.perf_counter()
+        prep_time = (t4 - t3) * 1000
+
+        # Verify performance split
+        assert load_time > 0, "Load time should be measurable"
+        assert prep_time > 0, "Prep time should be measurable"
+        assert prep_time < load_time, "Routing prep should be faster than loading"
+
+        # Clean up
+        import os
+
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+
+        logger.info(
+            f"Split architecture: Load={load_time:.1f}ms, Prep={prep_time:.1f}ms"
+        )
+
+
+def test_cleanup_functionality(network_file: Path) -> None:
+    """Test that cleanup properly closes connections and removes temporary files."""
+    import os
     from pathlib import Path
 
-    tmp_file = Path(tmp_file_path)
-    assert tmp_file.exists()
-    assert tmp_file.stat().st_size > 0
-    logger.info(f"Temporary network file created at: {tmp_file_path}")
+    # Create processor and track its temporary directory
+    proc = InMemoryNetworkProcessor(input_path=str(network_file))
+    temp_dir_path = Path(proc._temp_dir)
+
+    # Verify temp directory exists
+    assert temp_dir_path.exists(), "Temporary directory should be created"
+
+    # Use the processor to create some files
+    proc.load_network(
+        center=Coordinates(lat=48.137154, lon=11.576124), buffer_radius=400.0
+    )
+
+    output_path, _ = proc.prepare_routing_network(
+        start_point=Coordinates(lat=48.137154, lon=11.576124), buffer_radius=400.0
+    )
+
+    # Verify the output file was created in temp directory
+    assert os.path.exists(output_path), "Output file should be created"
+    assert str(output_path).startswith(
+        str(temp_dir_path)
+    ), "Output should be in temp directory"
+
+    # Check connection is active
+    assert proc.con is not None, "Connection should be active"
+
+    # Test connection works
+    result = proc.con.execute("SELECT 1").fetchone()
+    assert result[0] == 1, "Connection should be functional"
+
+    # Call cleanup
+    proc.cleanup()
+
+    # Verify temp directory is removed
+    assert (
+        not temp_dir_path.exists()
+    ), "Temporary directory should be removed after cleanup"
+
+    # Verify output file is gone (part of temp directory)
+    assert not os.path.exists(
+        output_path
+    ), "Output file should be removed with temp directory"
+
+    logger.info(
+        "Cleanup test: Successfully removed temp directory and closed connection"
+    )
 
 
-def test_network_is_wkb_format(processor: InMemoryNetworkProcessor) -> None:
-    """Test that the network geometries are in WKB format."""
-    sample_geometry = processor.con.execute(
-        f"SELECT geometry FROM {processor.network_table_name} LIMIT 1"
-    ).fetchone()[0]
+def test_context_manager_cleanup(network_file: Path) -> None:
+    """Test that context manager automatically calls cleanup."""
+    import os
 
-    assert isinstance(
-        sample_geometry, bytes
-    ), f"Geometry should be in WKB format (bytes), got {type(sample_geometry)}"
+    temp_dir_path = None
+    output_path = None
 
-
-def test_get_available_tables(
-    processor: InMemoryNetworkProcessor,
-) -> None:
-    """Test listing available tables in the in-memory database."""
-    tables = processor.get_available_tables()
-    assert isinstance(tables, list)
-    assert processor.network_table_name in tables
-    logger.info(f"Network table: {processor.network_table_name}")
-    logger.info(f"Available tables: {tables}")
-
-
-def test_split_with_subset_basic(network_file: Path) -> None:
-    """Basic test that splitting works."""
+    # Use context manager
     with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
-        # Try to split
-        split_table, split_meta = proc.split_edge_at_point_with_subset(
-            point=Coordinates(lat=48.137154, lon=11.576124),
-            network_buffer_radius=500.0,
-            max_search_radius_m=100.0,
+        temp_dir_path = Path(proc._temp_dir)
+
+        # Verify temp directory exists during usage
+        assert temp_dir_path.exists(), "Temporary directory should exist during usage"
+
+        # Create some files
+        output_path, _ = proc.prepare_routing_network(
+            start_point=Coordinates(lat=48.137154, lon=11.576124), buffer_radius=400.0
         )
 
-        # Basic assertions
-        assert split_table in proc.get_available_tables()
+        # Verify file exists during usage
+        assert os.path.exists(output_path), "Output file should exist during usage"
 
-        stats = proc.get_network_stats(split_table)
-        assert 0 < stats["edge_count"] < 375164
+    # After context manager exits, verify cleanup happened automatically
+    assert (
+        not temp_dir_path.exists()
+    ), "Temporary directory should be cleaned up automatically"
+    assert not os.path.exists(
+        output_path
+    ), "Output file should be cleaned up automatically"
 
-        split_info = split_meta.raw_meta.get("split_operation", {})
-        assert split_info.get("original_edge")
-        assert split_info.get("artificial_node_id")
-
-        # Quick validation of split
-        fraction = split_info["split_position"]["fraction"]
-        assert 0.0 <= fraction <= 1.0
-
-        logger.info(f"Basic test passed: split {split_info['original_edge']}")
-
-
-def test_split_with_subset_advanced(network_file: Path) -> None:
-    """Test splitting edge on a network subset without loading full network."""
-    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
-        # This loads only ~500m radius around the point, not the full 375k edges
-        split_table, split_meta = proc.split_edge_at_point_with_subset(
-            point=Coordinates(lat=48.137154, lon=11.576124),
-            network_buffer_radius=500.0,
-            max_search_radius_m=100.0,
-        )
-
-        # Get available tables
-        tables = proc.get_available_tables()
-        logger.info(f"Available tables after split: {tables}")
-
-        # Check that split table exists
-        assert split_table in tables, f"Split table {split_table} not found in {tables}"
-
-        # Get stats for split table
-        stats = proc.get_network_stats(split_table)
-        logger.info(f"Split table stats: {stats}")
-
-        # Verify the subset is smaller than full network
-        assert (
-            stats["edge_count"] < 375164
-        ), "Subset should be smaller than full network"
-        assert stats["edge_count"] > 0, "Subset should have at least one edge"
-
-        # Verify the split worked
-        split_info = split_meta.raw_meta.get("split_operation", {})  # Fixed key name
-        assert split_info.get("original_edge") is not None, "Missing original edge ID"
-        assert split_info.get("artificial_node_id") is not None, "Missing new node ID"
-        assert (
-            split_info.get("split_position", {}).get("fraction") is not None
-        ), "Missing split fraction"
-
-        # Verify split fraction is reasonable
-        fraction = split_info["split_position"]["fraction"]
-        assert (
-            0.001 <= fraction <= 0.999
-        ), f"Split fraction {fraction} should be between 0.001 and 0.999"
-
-        # Verify distance is within search radius
-        distance_m = split_info["split_position"]["distance_m"]
-        assert (
-            distance_m <= 100.0
-        ), f"Distance {distance_m}m should be <= search radius 100m"
-
-        # Additional useful checks:
-
-        # 1. Check that split edge appears twice (parts A and B)
-        result = proc.con.execute(f"""
-            SELECT COUNT(*) 
-            FROM {split_table} 
-            WHERE edge_id LIKE '%_A' OR edge_id LIKE '%_B'
-        """).fetchone()
-        split_edge_count = result[0]
-        assert (
-            split_edge_count == 2
-        ), f"Should have 2 split edges, got {split_edge_count}"
-
-        # 2. Check new node connectivity
-        node_id = split_info["artificial_node_id"]
-        result = proc.con.execute(f"""
-            SELECT 
-                COUNT(*) as connections,
-                SUM(CASE WHEN source = '{node_id}' THEN 1 ELSE 0 END) as as_source,
-                SUM(CASE WHEN target = '{node_id}' THEN 1 ELSE 0 END) as as_target
-            FROM {split_table}
-            WHERE source = '{node_id}' OR target = '{node_id}'
-        """).fetchone()
-
-        assert result[0] == 2, f"New node should connect 2 edges, connects {result[0]}"
-        assert (
-            result[1] == 1
-        ), f"New node should be source for 1 edge, is source for {result[1]}"
-        assert (
-            result[2] == 1
-        ), f"New node should be target for 1 edge, is target for {result[2]}"
-
-        # 3. Check edge lengths sum correctly
-        original_length = split_info["edge_properties"]["original_length_m"]
-        part_a_length = split_info["edge_properties"]["part_a_length_m"]
-        part_b_length = split_info["edge_properties"]["part_b_length_m"]
-
-        # Allow small floating point tolerance
-        total_split_length = part_a_length + part_b_length
-        length_diff = abs(original_length - total_split_length)
-        assert (
-            length_diff < 0.01
-        ), f"Split lengths don't sum to original: {original_length} != {total_split_length}"
-
-        logger.info(
-            f"✅ Test passed: Split {split_info['original_edge']} at {fraction:.3%}"
-        )
-        logger.info(f"   New node: {node_id}, Distance: {distance_m:.1f}m")
-        logger.info(f"   Part A: {part_a_length:.1f}m, Part B: {part_b_length:.1f}m")
-
-
-def test_interpolate_point_on_edge(network_file: Path) -> None:
-    """Test interpolating a point along an edge."""
-    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
-        # Try to split
-        split_table, split_meta = proc.split_edge_at_point_with_subset(
-            point=Coordinates(lat=48.137154, lon=11.576124),
-            network_buffer_radius=500.0,
-            max_search_radius_m=100.0,
-        )
-        stats = proc.get_network_stats(split_table)
-        new_table, new_meta = proc.interpolate_long_edges(
-            base_table=split_table,
-            max_edge_length=50.0,
-        )
-        new_stats = proc.get_network_stats(new_table)
-
-        assert new_stats["edge_count"] >= stats["edge_count"]
-        logger.info(
-            f"Interpolated long edges: {stats['edge_count']} → {new_stats['edge_count']} edges"
-        )
-        assert split_meta.raw_meta.get("split_operation", {}) is not None
-        assert new_meta.raw_meta.get("interpolation_operation", {}) is not None
+    logger.info("Context manager test: Automatic cleanup successful")
