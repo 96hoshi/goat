@@ -1,76 +1,14 @@
-from typing import Any, Dict, List, Optional, Self
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from goatlib.routing.config import routing_settings
 from goatlib.routing.schemas.base import (
     AccessEgressMode,
     CatchmentAreaRoutingModePT,
+    Coordinates,
 )
-
-
-class TransitCatchmentAreaStartingPoints(BaseModel):
-    """Starting points for transit catchment areas (single point only)."""
-
-    lat: List[float] = Field(
-        ..., description="List of latitudes (must contain exactly one point)."
-    )
-    lon: List[float] = Field(
-        ..., description="List of longitudes (must contain exactly one point)."
-    )
-
-    @model_validator(mode="after")
-    def validate_single_point(self) -> Self:
-        """Ensure exactly one starting point for transit routing."""
-        if not self.lat or not self.lon:
-            raise ValueError("Latitude and longitude are required for transit routing.")
-
-        if len(self.lat) != 1 or len(self.lon) != 1:
-            raise ValueError(
-                "Transit catchment areas support exactly one starting point."
-            )
-
-        return self
-
-
-class TransitCatchmentAreaTravelTimeCost(BaseModel):
-    """Travel time configuration with cutoffs for transit analysis."""
-
-    max_traveltime: int = Field(
-        ...,
-        title="Max Travel Time",
-        description="The maximum travel time in minutes.",
-        ge=1,
-        le=routing_settings.transit.max_traveltime,
-    )
-    cutoffs: List[int] = Field(
-        ...,
-        title="Time Cutoffs",
-        description="List of travel time cutoffs in minutes for catchment area bands.",
-        min_length=1,
-    )
-
-    @model_validator(mode="after")
-    def validate_cutoffs(self) -> Self:
-        """Validate that cutoffs are within max_traveltime and properly ordered."""
-        # Check cutoffs are within max time
-        invalid_cutoffs = [c for c in self.cutoffs if c > self.max_traveltime]
-        if invalid_cutoffs:
-            raise ValueError(
-                f"Cutoffs {invalid_cutoffs} exceed maximum travel time {self.max_traveltime}."
-            )
-
-        # Check all cutoffs are positive
-        if any(c <= 0 for c in self.cutoffs):
-            raise ValueError("All cutoffs must be positive.")
-
-        # Check cutoffs are unique and sorted
-        unique_sorted = sorted(set(self.cutoffs))
-        if self.cutoffs != unique_sorted:
-            raise ValueError("Cutoffs must be unique and in ascending order.")
-
-        return self
 
 
 class AccessEgressSettings(BaseModel):
@@ -93,28 +31,6 @@ class AccessEgressSettings(BaseModel):
         description="Average speed for this mode in km/h.",
         gt=0,
     )
-
-    @model_validator(mode="after")
-    def validate_mode_constraints(self) -> Self:
-        """Validate constraints based on the access/egress mode."""
-        mode_key = self.mode.value
-        limits = getattr(routing_settings.transit, mode_key, None)
-        if not limits:
-            raise ValueError(f"Unknown access/egress mode: {self.mode}")
-
-        # Validate time limits
-        if self.max_time > limits.max_time:
-            raise ValueError(
-                f"Max time ({self.max_time}) exceeds limit for {self.mode} ({limits.max_time})."
-            )
-
-        # Validate speed limits
-        if not (limits.min_speed <= self.speed <= limits.max_speed):
-            raise ValueError(
-                f"Speed ({self.speed}) must be between {limits.min_speed} and {limits.max_speed} for {self.mode}."
-            )
-
-        return self
 
     @classmethod
     def create_walk_settings(
@@ -139,9 +55,28 @@ class AccessEgressSettings(BaseModel):
         )
 
 
-class TransitRoutingSettings(BaseModel):
-    """Advanced configuration for transit routing algorithm."""
+class TransitCatchmentAreaRequest(BaseModel):
+    """Unified request model for transit catchment area calculation."""
 
+    starting_points: List[Coordinates] = Field(
+        ...,
+        title="Starting Point",
+        description="Starting point for catchment area calculation (single point only).",
+        min_length=1,
+        max_length=1,
+    )
+    transit_modes: List[CatchmentAreaRoutingModePT] = Field(
+        ...,
+        title="Transit Modes",
+        description="List of transit modes to include in the calculation.",
+        min_length=1,
+    )
+    cutoffs: List[int] = Field(
+        ...,
+        title="Time Cutoffs",
+        description="List of travel time cutoffs in minutes for catchment area bands.",
+        min_length=1,
+    )
     max_transfers: int = Field(
         default=4,
         title="Maximum Transfers",
@@ -159,32 +94,6 @@ class TransitRoutingSettings(BaseModel):
         title="Egress Settings",
         description="Configuration for egressing from transit stops.",
     )
-
-
-class TransitCatchmentAreaRequest(BaseModel):
-    """Unified request model for transit catchment area calculation."""
-
-    starting_points: TransitCatchmentAreaStartingPoints = Field(
-        ...,
-        title="Starting Points",
-        description="Starting point for catchment area calculation (single point only).",
-    )
-    transit_modes: List[CatchmentAreaRoutingModePT] = Field(
-        ...,
-        title="Transit Modes",
-        description="List of transit modes to include in the calculation.",
-        min_length=1,
-    )
-    travel_cost: TransitCatchmentAreaTravelTimeCost = Field(
-        ...,
-        title="Travel Cost Configuration",
-        description="Travel time and cutoff configuration.",
-    )
-    routing_settings: TransitRoutingSettings = Field(
-        default_factory=TransitRoutingSettings,
-        title="Routing Settings",
-        description="Advanced routing configuration.",
-    )
     network_id: Optional[UUID] = Field(
         default=None,
         title="Network ID",
@@ -195,17 +104,29 @@ class TransitCatchmentAreaRequest(BaseModel):
     @property
     def access_mode(self) -> AccessEgressMode:
         """Get the access mode for backward compatibility."""
-        return self.routing_settings.access_settings.mode
+        return self.access_settings.mode
 
     @property
     def egress_mode(self) -> AccessEgressMode:
         """Get the egress mode for backward compatibility."""
-        return self.routing_settings.egress_settings.mode
+        return self.egress_settings.mode
 
-    @property
-    def max_transfers(self) -> int:
-        """Get max transfers for backward compatibility."""
-        return self.routing_settings.max_transfers
+    @field_validator("cutoffs")
+    @classmethod
+    def validate_cutoffs(cls, v: List[int]) -> List[int]:
+        """Validate that cutoffs are properly ordered and positive."""
+
+        # Check all cutoffs are positive
+        if any(c <= 0 for c in v):
+            raise ValueError("All cutoffs must be positive.")
+
+        # Check cutoffs are unique and sorted
+        unique_sorted = sorted(set(v))
+        if v != unique_sorted:
+            # Auto-sort and deduplicate
+            return unique_sorted
+
+        return v
 
 
 # ------------------------ Response Schemas ----------------------
@@ -219,25 +140,58 @@ class CatchmentAreaPolygon(BaseModel):
         title="Travel Time",
         description="Maximum travel time for this catchment area in minutes.",
     )
-    geometry: Dict[str, Any] = Field(
+    points: List[Coordinates] = Field(
         ...,
+        title="Polygon Points",
+        description="List of coordinates defining the polygon boundary.",
+    )
+    geometry: Dict[str, Any] | None = Field(
+        default=None,
         title="Polygon Geometry",
-        description="Polygon geometry data (coordinates, type, etc.)",
+        description="Optional polygon geometry data (coordinates, type, etc.)",
     )
 
-    @field_validator("geometry")
-    @classmethod
-    def validate_geometry(cls, v: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate basic polygon geometry structure."""
-        if not isinstance(v, dict):
-            raise ValueError("Geometry must be a dictionary.")
+    def set_geometry_from_points(self) -> None:
+        """
+        Create and set polygon geometry from the coordinate points.
+        Updates the geometry field in-place using bounding box approach.
+        """
+        if not self.points:
+            self.geometry = {"type": "Polygon", "coordinates": []}
+            return
 
-        required_fields = ["type", "coordinates"]
-        for field in required_fields:
-            if field not in v:
-                raise ValueError(f"Geometry must have a '{field}' field.")
+        # Extract coordinate pairs
+        coord_pairs = []
+        for coord in self.points:
+            if coord.lat != 0 and coord.lon != 0:
+                coord_pairs.append(
+                    [coord.lon, coord.lat]
+                )  # GeoJSON uses [lon, lat] order
 
-        return v
+        if len(coord_pairs) < 3:
+            # Not enough points for a polygon, set empty
+            self.geometry = {"type": "Polygon", "coordinates": []}
+            return
+
+        # Create a simple bounding box
+        lons = [coord[0] for coord in coord_pairs]
+        lats = [coord[1] for coord in coord_pairs]
+
+        min_lon, max_lon = min(lons), max(lons)
+        min_lat, max_lat = min(lats), max(lats)
+
+        # Create bounding box polygon and set geometry
+        bbox_coordinates = [
+            [
+                [min_lon, min_lat],
+                [max_lon, min_lat],
+                [max_lon, max_lat],
+                [min_lon, max_lat],
+                [min_lon, min_lat],  # Close the polygon
+            ]
+        ]
+
+        self.geometry = {"type": "Polygon", "coordinates": bbox_coordinates}
 
 
 class TransitCatchmentAreaResponse(BaseModel):
@@ -267,32 +221,28 @@ request_examples_transit_catchment_area = {
     "basic_transit_catchment_area": {
         "summary": "basic transit catchment area request",
         "value": {
-            "starting_points": {"lat": [52.5200], "lon": [13.4050]},
+            "starting_points": [{"lat": 40.7128, "lon": -74.0060}],
             "transit_modes": ["bus", "tram", "subway"],
-            "travel_cost": {"max_traveltime": 60, "cutoffs": [15, 30, 45, 60]},
+            "cutoffs": [15, 30, 45, 60],
         },
     },
     "bike_access_catchment_area": {
         "summary": "bike access catchment area request",
         "value": {
-            "starting_points": {"lat": [52.5200], "lon": [13.4050]},
+            "starting_points": [{"lat": 40.7128, "lon": -74.0060}],
             "transit_modes": ["rail", "subway"],
-            "access_mode": "bicycle",
-            "travel_cost": {"max_traveltime": 45, "cutoffs": [15, 30, 45]},
-            "routing_settings": {"bike_settings": {"max_time": 25}},
+            "cutoffs": [15, 30, 45],
+            "access_settings": {"mode": "bicycle", "max_time": 25, "speed": 15.0},
         },
     },
     "custom_speeds_catchment_area": {
         "summary": "custom speeds catchment area request",
         "value": {
-            "starting_points": {"lat": [52.5200], "lon": [13.4050]},
+            "starting_points": [{"lat": 40.7128, "lon": -74.0060}],
             "transit_modes": ["bus", "tram"],
-            "egress_mode": "bicycle",
-            "travel_cost": {"max_traveltime": 50, "cutoffs": [10, 20, 30, 40, 50]},
-            "routing_settings": {
-                "walk_settings": {"speed": 1.2},
-                "bike_settings": {"speed": 5.0},
-            },
+            "cutoffs": [10, 20, 30, 40, 50],
+            "egress_settings": {"mode": "bicycle", "max_time": 20, "speed": 12.0},
+            "access_settings": {"mode": "walk", "max_time": 15, "speed": 4.5},
         },
     },
 }

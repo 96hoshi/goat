@@ -70,13 +70,11 @@ class ABRoutingRequest(BaseModel):
 
     origin: Coordinates = Field(..., description="Start Coordinates")
     destination: Coordinates = Field(..., description="End Coordinates")
-    # TODO: set it in the adapter
     provider: RoutingProvider = Field(
         default=RoutingProvider.motis, description="Routing service provider"
     )
     modes: List[Mode] = Field(default=[Mode.walk])
     time: datetime = Field(default=None, description="Departure time")
-    # TODO: use it properly
     time_is_arrival: bool = Field(
         default=False, description="Whether the provided time is an arrival time"
     )

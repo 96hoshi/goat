@@ -1,121 +1,147 @@
 import pytest
+from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingModePT
 from goatlib.routing.schemas.catchment_area_transit import (
-    AccessEgressMode,
+    AccessEgressSettings,
     CatchmentAreaPolygon,
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaResponse,
-    TransitCatchmentAreaStartingPoints,
-    TransitCatchmentAreaTravelTimeCost,
-    TransitRoutingSettings,
 )
 
 
 def test_valid_single_point() -> None:
-    """Test creating valid single starting point."""
-    starting_points = TransitCatchmentAreaStartingPoints(lat=[52.5200], lon=[13.4050])
-    assert starting_points.lat == [52.5200]
-    assert starting_points.lon == [13.4050]
+    """Test creating valid transit catchment area request."""
+    request = TransitCatchmentAreaRequest(
+        starting_points=[{"lat": 52.5200, "lon": 13.4050}],
+        transit_modes=[CatchmentAreaRoutingModePT.bus],
+        cutoffs=[15, 30],
+    )
+    assert len(request.starting_points) == 1
+    assert request.starting_points[0].lat == 52.5200
+    assert request.starting_points[0].lon == 13.4050
 
 
 def test_reject_multiple_points() -> None:
     """Test that multiple starting points are rejected."""
-    with pytest.raises(ValueError, match="exactly one starting point"):
-        TransitCatchmentAreaStartingPoints(
-            lat=[52.5200, 52.5300], lon=[13.4050, 13.4150]
+    with pytest.raises(ValueError, match="at most 1 item"):
+        TransitCatchmentAreaRequest(
+            starting_points=[
+                {"lat": 52.5200, "lon": 13.4050},
+                {"lat": 52.5300, "lon": 13.4150},
+            ],
+            transit_modes=[CatchmentAreaRoutingModePT.bus],
+            cutoffs=[15, 30],
         )
 
 
-def test_valid_travel_cost() -> None:
-    """Test creating valid travel cost configuration."""
-    travel_cost = TransitCatchmentAreaTravelTimeCost(
-        max_traveltime=60, cutoffs=[15, 30, 45, 60]
+def test_valid_cutoffs() -> None:
+    """Test creating valid cutoffs configuration."""
+    request = TransitCatchmentAreaRequest(
+        starting_points=[{"lat": 52.5200, "lon": 13.4050}],
+        transit_modes=[CatchmentAreaRoutingModePT.bus],
+        cutoffs=[15, 30, 45, 60],
     )
-    assert travel_cost.max_traveltime == 60
-    assert travel_cost.cutoffs == [15, 30, 45, 60]
+    assert request.cutoffs == [15, 30, 45, 60]
 
 
-def test_cutoffs_exceed_max_time() -> None:
-    """Test that cutoffs exceeding max travel time are rejected."""
-    with pytest.raises(ValueError, match="exceed maximum travel time"):
-        TransitCatchmentAreaTravelTimeCost(max_traveltime=30, cutoffs=[15, 45, 60])
+def test_unsorted_cutoffs_auto_fix() -> None:
+    """Test that unsorted cutoffs are automatically sorted."""
+    request = TransitCatchmentAreaRequest(
+        starting_points=[{"lat": 52.5200, "lon": 13.4050}],
+        transit_modes=[CatchmentAreaRoutingModePT.bus],
+        cutoffs=[30, 15, 45, 60],  # Unsorted input
+    )
+    # Should be automatically sorted and deduplicated
+    assert request.cutoffs == [15, 30, 45, 60]
 
 
 def test_negative_cutoffs() -> None:
     """Test that negative cutoffs are rejected."""
     with pytest.raises(ValueError, match="must be positive"):
-        TransitCatchmentAreaTravelTimeCost(max_traveltime=60, cutoffs=[-15, 30, 45])
-
-
-def test_unsorted_cutoffs() -> None:
-    """Test that unsorted cutoffs are rejected."""
-    with pytest.raises(ValueError, match="ascending order"):
-        TransitCatchmentAreaTravelTimeCost(max_traveltime=60, cutoffs=[30, 15, 45, 60])
+        TransitCatchmentAreaRequest(
+            starting_points=[{"lat": 52.5200, "lon": 13.4050}],
+            transit_modes=[CatchmentAreaRoutingModePT.bus],
+            cutoffs=[-15, 30, 45],
+        )
 
 
 def test_valid_request() -> None:
-    """Test creating a valid transit isochrone request."""
-    request_data = {
-        "starting_points": {"lat": [52.5200], "lon": [13.4050]},
-        "transit_modes": ["bus", "tram"],
-        "travel_cost": {
-            "max_traveltime": 60,
-            "cutoffs": [15, 30, 45, 60],
-        },
-    }
+    """Test creating a valid transit catchment area request."""
+    request = TransitCatchmentAreaRequest(
+        starting_points=[{"lat": 52.5200, "lon": 13.4050}],
+        transit_modes=[CatchmentAreaRoutingModePT.bus, CatchmentAreaRoutingModePT.tram],
+        cutoffs=[15, 30, 45, 60],
+    )
 
-    request = TransitCatchmentAreaRequest(**request_data)
-    assert len(request.starting_points.lat) == 1
+    assert len(request.starting_points) == 1
     assert len(request.transit_modes) == 2
-    assert request.travel_cost.max_traveltime == 60
+    assert len(request.cutoffs) == 4
 
 
 def test_bike_access_request() -> None:
     """Test transit request with bicycle access mode."""
-    request_data = {
-        "starting_points": {"lat": [52.5200], "lon": [13.4050]},
-        "transit_modes": ["rail", "subway"],
-        "travel_cost": {"max_traveltime": 45, "cutoffs": [15, 30, 45]},
-        "routing_settings": {
-            "access_settings": {"mode": "bicycle", "max_time": 25, "speed": 15.0}
-        },
-    }
-
-    request = TransitCatchmentAreaRequest(**request_data)
-    assert request.access_mode == AccessEgressMode.bicycle
-    assert request.routing_settings.access_settings.max_time == 25
-
-
-def test_routing_settings() -> None:
-    """Test routing settings configuration."""
-    routing_settings = TransitRoutingSettings()
-
-    # Test default values
-    assert routing_settings.max_transfers == 4
-    assert routing_settings.access_settings.max_time == 15
-    assert routing_settings.access_settings.speed == 5.0
-    assert routing_settings.egress_settings.max_time == 15
-    assert routing_settings.egress_settings.speed == 5.0
-
-
-def test_custom_routing_settings() -> None:
-    """Test custom routing settings."""
-    routing_settings = TransitRoutingSettings(
-        max_transfers=6,
-        access_settings={"mode": "walk", "max_time": 20, "speed": 4.5},
-        egress_settings={"mode": "bicycle", "max_time": 30, "speed": 18.0},
+    request = TransitCatchmentAreaRequest(
+        starting_points=[{"lat": 52.5200, "lon": 13.4050}],
+        transit_modes=[
+            CatchmentAreaRoutingModePT.rail,
+            CatchmentAreaRoutingModePT.subway,
+        ],
+        cutoffs=[15, 30, 45],
+        access_settings=AccessEgressSettings(
+            mode=AccessEgressMode.bicycle, max_time=25, speed=15.0
+        ),
     )
 
-    assert routing_settings.max_transfers == 6
-    assert routing_settings.access_settings.max_time == 20
-    assert routing_settings.access_settings.speed == 4.5
-    assert routing_settings.egress_settings.max_time == 30
-    assert routing_settings.egress_settings.speed == 18.0
+    assert request.access_mode == AccessEgressMode.bicycle
+    assert request.access_settings.max_time == 25
+
+
+def test_access_egress_settings() -> None:
+    """Test access and egress settings configuration."""
+    # Test default walk settings
+    walk_settings = AccessEgressSettings.create_walk_settings()
+    assert walk_settings.mode == AccessEgressMode.walk
+    assert walk_settings.max_time == 15
+    assert walk_settings.speed == 5.0
+
+    # Test default bike settings
+    bike_settings = AccessEgressSettings.create_bike_settings()
+    assert bike_settings.mode == AccessEgressMode.bicycle
+    assert bike_settings.max_time == 20
+    assert bike_settings.speed == 15.0
+
+
+def test_custom_request_configuration() -> None:
+    """Test custom transit request configuration."""
+    request = TransitCatchmentAreaRequest(
+        starting_points=[{"lat": 52.5200, "lon": 13.4050}],
+        transit_modes=[CatchmentAreaRoutingModePT.bus, CatchmentAreaRoutingModePT.tram],
+        cutoffs=[15, 30, 45],
+        max_transfers=6,
+        access_settings=AccessEgressSettings(
+            mode=AccessEgressMode.walk, max_time=20, speed=4.5
+        ),
+        egress_settings=AccessEgressSettings(
+            mode=AccessEgressMode.bicycle, max_time=30, speed=18.0
+        ),
+    )
+
+    assert request.max_transfers == 6
+    assert request.access_settings.max_time == 20
+    assert request.access_settings.speed == 4.5
+    assert request.egress_settings.max_time == 30
+    assert request.egress_settings.speed == 18.0
 
 
 def test_catchment_area_polygon() -> None:
     """Test catchment area polygon response structure."""
     polygon = CatchmentAreaPolygon(
         travel_time=30,
+        points=[
+            {"lat": 0, "lon": 0},
+            {"lat": 0, "lon": 1},
+            {"lat": 1, "lon": 1},
+            {"lat": 1, "lon": 0},
+        ],
         geometry={
             "type": "Polygon",
             "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
@@ -124,6 +150,7 @@ def test_catchment_area_polygon() -> None:
 
     assert polygon.travel_time == 30
     assert polygon.geometry["type"] == "Polygon"
+    assert len(polygon.points) == 4
 
 
 def test_transit_response() -> None:
@@ -131,6 +158,12 @@ def test_transit_response() -> None:
     polygons = [
         CatchmentAreaPolygon(
             travel_time=15,
+            points=[
+                {"lat": 0, "lon": 0},
+                {"lat": 0, "lon": 1},
+                {"lat": 1, "lon": 1},
+                {"lat": 1, "lon": 0},
+            ],
             geometry={
                 "type": "Polygon",
                 "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
@@ -138,6 +171,12 @@ def test_transit_response() -> None:
         ),
         CatchmentAreaPolygon(
             travel_time=30,
+            points=[
+                {"lat": 0, "lon": 0},
+                {"lat": 0, "lon": 2},
+                {"lat": 2, "lon": 2},
+                {"lat": 2, "lon": 0},
+            ],
             geometry={
                 "type": "Polygon",
                 "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]],

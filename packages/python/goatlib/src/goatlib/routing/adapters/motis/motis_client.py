@@ -1,7 +1,5 @@
 import json
 import logging
-import random
-from pathlib import Path
 from typing import Any, Dict, Optional, Self
 
 import httpx
@@ -15,16 +13,11 @@ class MotisServiceClient:
     """
     Client for MOTIS routing services.
 
-    Handles both real API requests and fixture data loading for development/testing.
-    Uses the standard MOTIS API format for requests and responses.
+    Handles real API requests using the standard MOTIS API format.
     """
 
     base_url: str
     plan_endpoint: str
-    use_fixtures: bool
-    _fixture_path: Path | None
-    _fixture_cache: Dict[Path, Any]
-    _rng: random.Random
     _http_client: httpx.AsyncClient
 
     def __init__(
@@ -32,26 +25,11 @@ class MotisServiceClient:
         base_url: str = "https://api.transitous.org",
         plan_endpoint: str = "/api/v5/plan",
         one_to_all_endpoint: str = "/api/v1/one-to-all",
-        use_fixtures: bool = True,
-        fixture_path: Path | str | None = None,
-        seed: int | None = 42,
     ) -> None:
         self.base_url = base_url
         self.plan_endpoint = plan_endpoint
         self.one_to_all_endpoint = one_to_all_endpoint
-        self.use_fixtures = use_fixtures
-        self._fixture_path = Path(fixture_path) if fixture_path else None
-        self._fixture_cache = {}
-        self._rng = random.Random()
-        if self.use_fixtures and seed is not None:
-            self._rng.seed(seed)
-
-        if self.use_fixtures and self._fixture_path is None:
-            raise ValueError(
-                "`fixture_path` must be provided when `use_fixtures` is True."
-            )
-        if not self.use_fixtures:
-            self._http_client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
+        self._http_client = httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
 
     async def __aenter__(self: Self) -> Self:
         """
@@ -86,10 +64,7 @@ class MotisServiceClient:
             ServiceError: If the MOTIS service is unavailable or returns an error
             ParsingError: If the response format is invalid
         """
-        if self.use_fixtures:
-            return self._load_fixture_response()
-        else:
-            return await self._make_plan_api_request(motis_request)
+        return await self._make_plan_api_request(motis_request)
 
     async def one_to_all(self: Self, motis_request: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -178,39 +153,5 @@ class MotisServiceClient:
 
     async def close(self: Self) -> None:
         """Closes the underlying HTTP client."""
-        if not self.use_fixtures and hasattr(self, "_http_client"):
+        if hasattr(self, "_http_client"):
             await self._http_client.aclose()
-
-    def _load_fixture_response(self: Self) -> Dict[str, Any]:
-        """Load a fixture response for development/testing."""
-        try:
-            fixtures_dir = self._get_fixtures_directory()
-
-            fixture_files = list(fixtures_dir.glob("*.json"))
-            if not fixture_files:
-                raise FileNotFoundError(f"No fixture files found in: {fixtures_dir}")
-
-            selected_fixture = self._rng.choice(fixture_files)
-            logger.info(f"Using fixture file: {selected_fixture.name}")
-
-            if selected_fixture in self._fixture_cache:
-                return self._fixture_cache[selected_fixture]
-
-            # Load and cache the new fixture data
-            json_text = selected_fixture.read_text(encoding="utf-8")
-            fixture_data = json.loads(json_text)
-            self._fixture_cache[selected_fixture] = fixture_data
-
-            return fixture_data
-
-        except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
-            logger.error(f"Failed to load MOTIS fixture response: {e}")
-            raise RuntimeError("Failed to load or parse MOTIS fixture data.") from e
-
-    def _get_fixtures_directory(self: Self) -> Path:
-        """Returns the fixtures directory provided during initialization."""
-        if not self._fixture_path or not self._fixture_path.is_dir():
-            raise FileNotFoundError(
-                f"Provided fixture directory does not exist or was not provided: {self._fixture_path}"
-            )
-        return self._fixture_path

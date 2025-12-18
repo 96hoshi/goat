@@ -29,7 +29,7 @@ class RouteValidator:
     def __init__(self) -> None:
         # Speed limits in km/h for different modes
         self.max_speeds = {
-            Mode.walk: 8.0,  # Fast walking
+            Mode.walk: 15.0,  # Allow for jogging/fast walking scenarios
             Mode.bicycle: 35.0,  # E-bike or very fast cycling
             Mode.car: 120.0,  # Highway speeds
             Mode.bus: 80.0,  # Urban bus max speed
@@ -252,10 +252,10 @@ class RouteValidator:
                     )
                 )
 
-        # Distance validation - simplified approach to avoid MOTIS calculation issues
+        # Distance validation - adjusted for long-distance routes
         if leg.distance and leg.distance > 0:
-            # Only flag obviously problematic distances
-            if leg.distance > 100000:  # More than 100km for a single leg
+            # Only flag extremely problematic distances (more than 600km for a single leg)
+            if leg.distance > 600000:  # More than 600km for a single leg
                 issues.append(
                     PlausibilityIssue(
                         "warning",

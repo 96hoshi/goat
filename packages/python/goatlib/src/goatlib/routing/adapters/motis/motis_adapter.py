@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from pathlib import Path
 from typing import Self
 
 from goatlib.routing.errors import ParsingError, RoutingError, ServiceError
@@ -9,6 +8,8 @@ from goatlib.routing.schemas.ab_routing import (
     ABRoutingRequest,
     ABRoutingResponse,
 )
+from goatlib.routing.schemas.base import CatchmentAreaRoutingModePT
+from goatlib.routing.schemas.catchment import CatchmentRequest, CatchmentResponse
 from goatlib.routing.schemas.catchment_area_transit import (
     TransitCatchmentAreaRequest,
     TransitCatchmentAreaResponse,
@@ -87,7 +88,45 @@ class MotisPlanApiAdapter(RoutingService):
             logger.error(f"Unexpected error during MOTIS routing: {e}")
             raise RoutingError("An unexpected internal error occurred") from e
 
-    async def get_transit_catchment_area(
+    async def get_isochrone(self: Self, request: CatchmentRequest) -> CatchmentResponse:
+        """
+        Execute an isochrone request using MOTIS one-to-all API.
+
+        Args:
+            request: Transit catchment area request
+
+        Returns:
+            TransitCatchmentAreaResponse with isochrone polygons
+
+        Raises:
+            ParsingError: If request/response format is invalid
+            ServiceError: If network/service connection fails
+            RoutingError: For unexpected errors
+        """
+        # Build MOTIS one-to-all request from our catchment request
+        # For simplicity, we assume all starting points use the same modes and cutoffs
+        # NOTE: Internally we accept and consider only the first point
+        # We let MOTIS handle first mile access internally
+        pt_reqeuest = TransitCatchmentAreaRequest(
+            starting_points=request.starting_points,
+            transit_modes=[
+                CatchmentAreaRoutingModePT.bus,
+                CatchmentAreaRoutingModePT.subway,
+                CatchmentAreaRoutingModePT.tram,
+                CatchmentAreaRoutingModePT.rail,
+            ],
+            cutoffs=request.cutoffs,
+        )
+
+        pt_response = await self._get_transit_catchment_area(pt_reqeuest)
+        # Convert TransitCatchmentAreaResponse to CatchmentResponse
+        catchment_response = CatchmentResponse(
+            pt_catchment=pt_response,
+            last_mile_catchment=None,  # TODO: integrate Rust catchment areas here
+        )
+        return catchment_response
+
+    async def _get_transit_catchment_area(
         self: Self, request: TransitCatchmentAreaRequest
     ) -> TransitCatchmentAreaResponse:
         """
@@ -137,16 +176,12 @@ class MotisPlanApiAdapter(RoutingService):
 
 
 def create_motis_adapter(
-    use_fixtures: bool = True,
-    fixture_path: Path | str = None,
     base_url: str = "https://api.transitous.org",
 ) -> MotisPlanApiAdapter:
     """
     Convenience function to create a MOTIS adapter instance.
 
     Args:
-        use_fixtures: Whether to use fixture data instead of real API calls
-        fixture_path: Path to the directory containing MOTIS fixture data
         base_url: Base URL for the MOTIS API
 
     Returns:
@@ -154,8 +189,6 @@ def create_motis_adapter(
 
     """
     motis_client = MotisServiceClient(
-        use_fixtures=use_fixtures,
-        fixture_path=fixture_path,
         base_url=base_url,
     )
     return MotisPlanApiAdapter(motis_client)

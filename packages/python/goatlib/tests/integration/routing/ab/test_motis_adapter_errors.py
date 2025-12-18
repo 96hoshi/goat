@@ -10,9 +10,7 @@ from goatlib.routing.schemas.base import Coordinates, Mode
 async def test_invalid_api_url_handling() -> None:
     """Test handling of invalid API URLs."""
     # Create a separate adapter with invalid URL for this test
-    adapter = create_motis_adapter(
-        use_fixtures=False, base_url="https://nonexistent-api.example.com"
-    )
+    adapter = create_motis_adapter(base_url="https://nonexistent-api.example.com")
 
     request = ABRoutingRequest(
         origin=Coordinates(lat=52.5200, lon=13.4050),

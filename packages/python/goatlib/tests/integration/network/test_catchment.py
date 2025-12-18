@@ -22,10 +22,15 @@ def test_catchment_workflow(network_file: Path):
     with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
         # Use the new optimized method that combines all preprocessing
         start_coords = Coordinates(lat=48.1351, lon=11.5820)
+
+        # Define cutoffs first to ensure network preparation covers the max cutoff
+        cutoffs_minutes = [10, 20, 30]
+        max_cutoff = max(cutoffs_minutes)
+
         parquet_path, start_node_id = proc.prepare_routing_network(
             start_point=start_coords,
             buffer_radius=1000.0,
-            travel_time_minutes=15.0,
+            travel_time_minutes=max_cutoff,  # Use max cutoff for network preparation
             speed_kmh=5.0,
         )
 
@@ -33,7 +38,7 @@ def test_catchment_workflow(network_file: Path):
         network = routing.load_network(parquet_path)
 
         # Calculate isochrones for the requested cutoffs (convert minutes to seconds)
-        cutoffs_seconds = [c * 60 for c in [10, 20, 30]]
+        cutoffs_seconds = [c * 60 for c in cutoffs_minutes]
         results = network.calculate_isochrone_multiple_times(
             start_node=start_node_id, time_thresholds=cutoffs_seconds
         )
@@ -42,7 +47,7 @@ def test_catchment_workflow(network_file: Path):
         for i, result in enumerate(results):
             assert result.reachable_nodes > 0
             logger.info(
-                f"Cutoff {[10, 20, 30][i]} min: {result.reachable_nodes} reachable nodes"
+                f"Cutoff {cutoffs_minutes[i]} min: {result.reachable_nodes} reachable nodes"
             )
 
 
@@ -135,7 +140,6 @@ def test_optimized_catchment_benchmark(network_file: Path):
         )
 
     # Summary analysis
-    logger.info("\n=== BENCHMARK SUMMARY ===")
     best_prep = min(r["prep_time"] for r in results)
     best_total = min(r["total_time"] for r in results)
 
@@ -156,8 +160,6 @@ def test_split_edge_accuracy_benchmark(network_file: Path):
     """
     Test the accuracy improvements of the optimized routing network preparation.
     """
-    logger.info("=== OPTIMIZED ROUTING NETWORK ACCURACY BENCHMARK ===")
-
     with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
         start_coords = Coordinates(lat=48.1351, lon=11.5820)
 
@@ -191,9 +193,6 @@ def test_split_edge_accuracy_benchmark(network_file: Path):
         """).fetchone()
 
         edge_count = network_info[0]
-        unique_nodes = len(
-            set([network_info[1], network_info[2]])
-        )  # Approximate unique nodes
         avg_length = network_info[3]
 
         logger.info(f"  Network edges: {edge_count}")
@@ -223,3 +222,45 @@ def test_split_edge_accuracy_benchmark(network_file: Path):
         ), f"Preparation took {prep_time:.1f}ms, should be under 150ms"
 
         logger.info("✓ Optimized routing network accuracy benchmark PASSED")
+
+
+# add a test to try calculate_multiple_isochrones on the rust_network_analysis module
+def test_rust_network_multiple_isochrones(network_file: Path):
+    """
+    Test the Rust network analysis library's ability to calculate multiple isochrones.
+    """
+
+    # Use InMemoryNetworkProcessor to prepare a properly formatted network for Rust
+    with InMemoryNetworkProcessor(input_path=str(network_file)) as proc:
+        start_coords = Coordinates(lat=48.1351, lon=11.5820)
+
+        # Prepare the network in the format expected by the Rust library
+        parquet_path, start_node_id = proc.prepare_routing_network(
+            start_point=start_coords,
+            buffer_radius=1000.0,
+            travel_time_minutes=20.0,
+            speed_kmh=5.0,
+        )
+
+        # Load the network using the Rust library
+        network = routing.load_network(parquet_path)
+
+    # Define multiple cutoffs in seconds
+    cutoffs_seconds = [300, 600, 900]  # 5min, 10min, 15min
+
+    # Calculate multiple isochrones
+    results = network.calculate_isochrone_multiple_times(
+        start_node=start_node_id, time_thresholds=cutoffs_seconds
+    )
+
+    assert len(results) == len(cutoffs_seconds), "Should return results for all cutoffs"
+
+    for i, result in enumerate(results):
+        assert (
+            result.reachable_nodes > 0
+        ), f"Isochrone for cutoff {cutoffs_seconds[i]}s should have reachable nodes"
+        logger.info(
+            f"Cutoff {cutoffs_seconds[i]//60} min: {result.reachable_nodes} reachable nodes"
+        )
+
+    logger.info("✓ Rust network multiple isochrones test PASSED")

@@ -11,6 +11,9 @@ from goatlib.routing.schemas.base import (
     Coordinates,
 )
 
+# Default street network configuration constants
+DEFAULT_NODE_LAYER_PROJECT_ID = 1  # Default node layer project ID
+
 
 class TravelTimeCost(BaseModel):
     """Travel time-based cost schema."""
@@ -96,12 +99,10 @@ class CatchmentAreaStreetNetwork(BaseModel):
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
         if self.node_layer_project_id is None:
-            self.node_layer_project_id = (
-                routing_settings.default_street_network_node_layer_project_id
-            )
+            self.node_layer_project_id = DEFAULT_NODE_LAYER_PROJECT_ID
 
 
-class CatchmentAreaRequest(BaseModel):
+class CatchmentAreaActiveCarRequest(BaseModel):
     """Unified catchment area request model."""
 
     starting_points: list[Coordinates] = Field(
@@ -199,11 +200,11 @@ class CatchmentAreaRequest(BaseModel):
             if isinstance(self.travel_cost, TravelTimeCost):
                 if (
                     self.travel_cost.max_traveltime
-                    > routing_settings.motorized_mobility_limits["max_traveltime"]
+                    > routing_settings.motorized_mobility.max_traveltime
                 ):
                     raise ValueError(
                         f"Travel time ({self.travel_cost.max_traveltime}) exceeds maximum for motorized mobility "
-                        f"({routing_settings.motorized_mobility_limits['max_traveltime']})."
+                        f"({routing_settings.motorized_mobility.max_traveltime})."
                     )
                 # Speed is optional for cars
                 if self.travel_cost.speed is not None and self.travel_cost.speed <= 0:
@@ -211,8 +212,8 @@ class CatchmentAreaRequest(BaseModel):
 
 
 # Backward compatibility aliases
-ICatchmentAreaActiveMobility = CatchmentAreaRequest
-ICatchmentAreaCar = CatchmentAreaRequest
+ICatchmentAreaActiveMobility = CatchmentAreaActiveCarRequest
+ICatchmentAreaCar = CatchmentAreaActiveCarRequest
 
 
 request_examples: dict[str, Any] = {

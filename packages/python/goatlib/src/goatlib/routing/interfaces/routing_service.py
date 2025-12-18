@@ -2,10 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Self
 
 from goatlib.routing.schemas.ab_routing import ABRoutingRequest, ABRoutingResponse
-from goatlib.routing.schemas.isochrone_routing import (
-    IsochroneRequest,
-    IsochroneResponse,
-)
+from goatlib.routing.schemas.catchment import CatchmentRequest, CatchmentResponse
 
 
 class RoutingService(ABC):
@@ -31,16 +28,17 @@ class RoutingService(ABC):
         """
         pass
 
-    async def get_isochrone(self: Self, request: IsochroneRequest) -> IsochroneResponse:
+    @abstractmethod
+    async def get_isochrone(self: Self, request: CatchmentRequest) -> CatchmentResponse:
         """
         Execute an isochrone request and return standardized isochrone data. Not yet implemented.
         Args:
-            request: Standardized isochrone request following our internal schema
+            request: Standardized catchment area request following our internal schema
         Returns:
-            IsochroneResponse: Standardized isochrone response containing isochrone data
+            CatchmentResponse: Standardized catchment area response containing isochrone data
         Raises:
             ValueError: If the request is invalid
             RuntimeError: If the routing service is unavailable or returns an error
             NotImplementedError: If the isochrone functionality is not implemented
         """
-        raise NotImplementedError("get_isochrone method is not implemented.")
+        pass

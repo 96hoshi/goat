@@ -40,7 +40,6 @@ def test_request() -> ABRoutingRequest:
 # --- Test Cases ---
 
 
-@pytest.mark.slow
 @pytest.mark.network
 async def test_fixture_routing_basic_success(
     motis_adapter_online: MotisPlanApiAdapter, test_request: ABRoutingRequest
@@ -53,7 +52,6 @@ async def test_fixture_routing_basic_success(
     validate_route_data(routes)
 
 
-@pytest.mark.slow
 @pytest.mark.network
 async def test_fixture_different_requests_return_data(
     motis_adapter_online: MotisPlanApiAdapter,
@@ -79,7 +77,6 @@ async def test_fixture_different_requests_return_data(
     assert response2.routes, "Second request should yield routes"
 
 
-@pytest.mark.slow
 @pytest.mark.network
 async def test_fixture_max_results_enforcement(
     motis_adapter_online: MotisPlanApiAdapter,
@@ -98,7 +95,6 @@ async def test_fixture_max_results_enforcement(
     ), f"Should return at most 5 routes, got {len(response.routes)}"
 
 
-@pytest.mark.slow
 @pytest.mark.network
 async def test_fixture_distance_calculation_and_speed_realism(
     motis_adapter_online: MotisPlanApiAdapter, test_request: ABRoutingRequest

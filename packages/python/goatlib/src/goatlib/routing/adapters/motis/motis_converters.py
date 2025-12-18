@@ -301,19 +301,22 @@ def translate_to_motis_one_to_all_request(
     params = motis_settings.one_to_all_params
     defaults = motis_settings.one_to_all_defaults
 
-    # Extract starting point coordinates
-    lat, lon = request.starting_points.lat[0], request.starting_points.lon[0]
+    # Extract starting point coordinates (handle list format, use first point)
+    starting_point = (
+        request.starting_points[0]
+        if isinstance(request.starting_points, list)
+        else request.starting_points
+    )
+    lat, lon = starting_point.lat, starting_point.lon
 
     # Build core parameters
     api_params = {
         params.origin: _build_location_string(lat, lon),
-        params.max_travel_time: request.travel_cost.max_traveltime,
+        params.max_travel_time: max(
+            request.cutoffs
+        ),  # Use max cutoff as the time limit
         params.arrive_by: False,
-        params.time: (
-            request.departure_time.isoformat()
-            if hasattr(request, "departure_time") and request.departure_time
-            else datetime.now().isoformat()
-        ),
+        # Omit time parameter to use current time
     }
 
     # Handle transit modes using utility function
@@ -332,35 +335,33 @@ def translate_to_motis_one_to_all_request(
         [request.egress_mode]
     )
 
-    # Add routing settings if provided
-    if request.routing_settings:
-        if request.routing_settings.max_transfers:
-            api_params[params.max_transfers] = request.routing_settings.max_transfers
+    # Add max transfers
+    api_params[params.max_transfers] = request.max_transfers
 
-        # Access settings (pre-transit)
-        if request.routing_settings.access_settings:
-            access = request.routing_settings.access_settings
-            access_time_seconds = access.max_time * 60
-            access_speed_ms = access.speed / 3.6  # km/h to m/s
+    # Access settings (pre-transit)
+    if request.access_settings:
+        access = request.access_settings
+        access_time_seconds = access.max_time * 60
+        access_speed_ms = access.speed / 3.6  # km/h to m/s
 
-            api_params.update(
-                {
-                    params.max_pre_transit_time: access_time_seconds,
-                    params.pedestrian_speed: access_speed_ms
-                    if access.mode == AccessEgressMode.walk
-                    else access_speed_ms,
-                    params.cycling_speed: access_speed_ms
-                    if access.mode == AccessEgressMode.bicycle
-                    else None,
-                }
-            )
+        # Update access-related parameters
+        update_params = {
+            params.max_pre_transit_time: access_time_seconds,
+        }
 
-        # Egress settings (post-transit)
-        if request.routing_settings.egress_settings:
-            egress = request.routing_settings.egress_settings
-            egress_time_seconds = egress.max_time * 60
+        if access.mode == AccessEgressMode.walk:
+            update_params[params.pedestrian_speed] = access_speed_ms
+        elif access.mode == AccessEgressMode.bicycle:
+            update_params[params.cycling_speed] = access_speed_ms
 
-            api_params[params.max_post_transit_time] = egress_time_seconds
+        api_params.update(update_params)
+
+    # Egress settings (post-transit)
+    if request.egress_settings:
+        egress = request.egress_settings
+        egress_time_seconds = egress.max_time * 60
+
+        api_params[params.max_post_transit_time] = egress_time_seconds
 
     # Add default values
     api_params.update(
@@ -385,7 +386,7 @@ def parse_motis_one_to_all_response(
         request: Original request (needed for cutoff processing)
 
     Returns:
-        TransitCatchmentAreaResponse with polygons
+        TransitCatchmentAreaResponse with reachable locations (geometry optional)
 
     Raises:
         ParsingError: If the response data is invalid
@@ -401,7 +402,7 @@ def parse_motis_one_to_all_response(
             return TransitCatchmentAreaResponse(polygons=[])
 
         # Group locations by travel time cutoffs
-        cutoffs = request.travel_cost.cutoffs
+        cutoffs = request.cutoffs
         polygons = []
 
         for cutoff in cutoffs:
@@ -423,11 +424,17 @@ def parse_motis_one_to_all_response(
                         reachable_within_cutoff.append(place_data)
 
             if reachable_within_cutoff:
-                # Create polygon from reachable points
-                polygon_geom = _create_polygon_from_points(reachable_within_cutoff)
+                # Convert place data to Coordinates objects for points field
+                coordinate_points = [
+                    Coordinates(lat=place["lat"], lon=place["lon"])
+                    for place in reachable_within_cutoff
+                ]
 
+                # Create polygon without geometry for now (geometry calculation optional)
                 polygon = CatchmentAreaPolygon(
-                    travel_time=cutoff, geometry=polygon_geom
+                    travel_time=cutoff,
+                    points=coordinate_points,
+                    geometry=None,  # Geometry calculation optional, can be added later
                 )
                 polygons.append(polygon)
 
@@ -436,13 +443,10 @@ def parse_motis_one_to_all_response(
             metadata={
                 "total_locations": len(reachable_locations),
                 "source": "motis_one_to_all",
-                "request_max_travel_time": request.travel_cost.max_traveltime,
-                "cutoffs_requested": request.travel_cost.cutoffs,
+                "cutoffs_requested": request.cutoffs,
                 "polygons_generated": len(polygons),
-                "locations_with_valid_coordinates": sum(
-                    len(polygon.geometry.get("coordinates", [[]])[0])
-                    for polygon in polygons
-                    if polygon.geometry.get("coordinates")
+                "total_reachable_points": sum(
+                    len(polygon.points) for polygon in polygons
                 ),
             },
         )
@@ -452,56 +456,6 @@ def parse_motis_one_to_all_response(
         raise ParsingError(
             "Could not parse MOTIS one-to-all response due to invalid data."
         ) from e
-
-
-# TODO use catchment class
-def _create_polygon_from_points(
-    reachable_locations: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """
-    Create a simple polygon geometry from reachable location points.
-    This is a temporary implementation using bounding box approach.
-
-    Args:
-        reachable_locations: List of reachable location data with lat/lon
-
-    Returns:
-        GeoJSON-style polygon geometry
-    """
-    if not reachable_locations:
-        return {"type": "Polygon", "coordinates": []}
-
-    # Extract coordinates
-    coordinates = []
-    for loc in reachable_locations:
-        lat = loc.get("lat", 0)
-        lon = loc.get("lon", 0)
-        if lat != 0 and lon != 0:
-            coordinates.append([lon, lat])  # GeoJSON uses [lon, lat] order
-
-    if len(coordinates) < 3:
-        # Not enough points for a polygon, return empty
-        return {"type": "Polygon", "coordinates": []}
-
-    # Create a simple bounding box
-    lons = [coord[0] for coord in coordinates]
-    lats = [coord[1] for coord in coordinates]
-
-    min_lon, max_lon = min(lons), max(lons)
-    min_lat, max_lat = min(lats), max(lats)
-
-    # Create bounding box polygon
-    bbox_coordinates = [
-        [
-            [min_lon, min_lat],
-            [max_lon, min_lat],
-            [max_lon, max_lat],
-            [min_lon, max_lat],
-            [min_lon, min_lat],  # Close the polygon
-        ]
-    ]
-
-    return {"type": "Polygon", "coordinates": bbox_coordinates}
 
 
 def extract_bus_stations_for_buffering(

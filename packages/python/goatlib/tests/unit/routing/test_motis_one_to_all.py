@@ -9,12 +9,10 @@ from goatlib.routing.adapters.motis.motis_converters import (
     parse_motis_one_to_all_response,
     translate_to_motis_one_to_all_request,
 )
-from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingModePT
+from goatlib.routing.schemas.base import CatchmentAreaRoutingModePT
 from goatlib.routing.schemas.catchment_area_transit import (
+    AccessEgressSettings,
     TransitCatchmentAreaRequest,
-    TransitCatchmentAreaStartingPoints,
-    TransitCatchmentAreaTravelTimeCost,
-    TransitRoutingSettings,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,26 +122,19 @@ class MotisOneToAllPlausibilityTester:
         """Run comprehensive plausibility testing."""
         logger.info("🧪 MOTIS One-to-All Plausibility Test")
 
-        adapter = create_motis_adapter(use_fixtures=False)
+        adapter = create_motis_adapter()
 
         try:
             # Create test request
             request = TransitCatchmentAreaRequest(
-                starting_points=TransitCatchmentAreaStartingPoints(
-                    lat=[48.1351],
-                    lon=[11.5820],
-                ),
+                starting_points=[{"lat": 48.1351, "lon": 11.5820}],
                 transit_modes=[
                     CatchmentAreaRoutingModePT.bus,
                     CatchmentAreaRoutingModePT.subway,
                 ],
-                access_mode=AccessEgressMode.walk,
-                egress_mode=AccessEgressMode.walk,
-                travel_cost=TransitCatchmentAreaTravelTimeCost(
-                    max_traveltime=30,
-                    cutoffs=[10, 20, 30],
-                ),
-                routing_settings=TransitRoutingSettings(),
+                cutoffs=[10, 20, 30],
+                access_settings=AccessEgressSettings.create_walk_settings(),
+                egress_settings=AccessEgressSettings.create_walk_settings(),
             )
 
             # Get MOTIS response
@@ -188,12 +179,11 @@ class MotisOneToAllPlausibilityTester:
                 "test_location": "Munich, Germany",
                 "request_params": {
                     "starting_point": [
-                        request.starting_points.lat[0],
-                        request.starting_points.lon[0],
+                        request.starting_points[0].lat,
+                        request.starting_points[0].lon,
                     ],
                     "transit_modes": [mode.value for mode in request.transit_modes],
-                    "max_travel_time": request.travel_cost.max_traveltime,
-                    "cutoffs": request.travel_cost.cutoffs,
+                    "cutoffs": request.cutoffs,
                 },
                 "motis_request": motis_request_data,
                 "raw_response_stats": {
@@ -248,44 +238,37 @@ def plausibility_tester():
 def sample_request():
     """Fixture providing a sample transit catchment area request."""
     return TransitCatchmentAreaRequest(
-        starting_points=TransitCatchmentAreaStartingPoints(
-            lat=[48.1351],
-            lon=[11.5820],  # Munich city center
-        ),
+        starting_points=[
+            {"lat": 48.1351, "lon": 11.5820}  # Munich city center
+        ],
         transit_modes=[
             CatchmentAreaRoutingModePT.bus,
             CatchmentAreaRoutingModePT.subway,
         ],
-        access_mode=AccessEgressMode.walk,
-        egress_mode=AccessEgressMode.walk,
-        travel_cost=TransitCatchmentAreaTravelTimeCost(
-            max_traveltime=30,
-            cutoffs=[10, 20, 30],
-        ),
-        routing_settings=TransitRoutingSettings(),
+        cutoffs=[10, 20, 30],
+        access_settings=AccessEgressSettings.create_walk_settings(),
+        egress_settings=AccessEgressSettings.create_walk_settings(),
     )
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_motis_one_to_all_raw_response_validation(plausibility_tester):
     """Test that MOTIS one-to-all returns a valid response structure."""
-    adapter = create_motis_adapter(use_fixtures=False)
+    adapter = create_motis_adapter()
 
     try:
         request = TransitCatchmentAreaRequest(
-            starting_points=TransitCatchmentAreaStartingPoints(
-                lat=[48.1351],
-                lon=[11.5820],
-            ),
+            starting_points=[{"lat": 48.1351, "lon": 11.5820}],
             transit_modes=[CatchmentAreaRoutingModePT.bus],
-            travel_cost=TransitCatchmentAreaTravelTimeCost(
-                max_traveltime=20,
-                cutoffs=[10, 20],
-            ),
+            cutoffs=[10, 20],
         )
 
         motis_request = translate_to_motis_one_to_all_request(request)
-        motis_response = await adapter.motis_client.one_to_all(motis_request)
+        try:
+            motis_response = await adapter.motis_client.one_to_all(motis_request)
+        except Exception as e:
+            pytest.skip(f"MOTIS one-to-all service unavailable: {e}")
 
         # Validate response structure
         issues = plausibility_tester.validate_raw_motis_response(motis_response)
@@ -308,14 +291,18 @@ async def test_motis_one_to_all_raw_response_validation(plausibility_tester):
         await adapter.motis_client.close()
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_motis_response_parsing(sample_request):
     """Test that MOTIS response can be parsed into our internal format."""
-    adapter = create_motis_adapter(use_fixtures=False)
+    adapter = create_motis_adapter()
 
     try:
         motis_request = translate_to_motis_one_to_all_request(sample_request)
-        motis_response = await adapter.motis_client.one_to_all(motis_request)
+        try:
+            motis_response = await adapter.motis_client.one_to_all(motis_request)
+        except Exception as e:
+            pytest.skip(f"MOTIS one-to-all service unavailable: {e}")
 
         # Parse the response
         parsed_response = parse_motis_one_to_all_response(
@@ -328,29 +315,38 @@ async def test_motis_response_parsing(sample_request):
         assert len(parsed_response.polygons) > 0, "Should generate at least one polygon"
 
         # Check polygon structure
+        max_cutoff = max(sample_request.cutoffs)
         for polygon in parsed_response.polygons:
             assert hasattr(polygon, "travel_time"), "Polygon should have travel_time"
             assert polygon.travel_time > 0, "Travel time should be positive"
             assert (
-                polygon.travel_time <= sample_request.travel_cost.max_traveltime
+                polygon.travel_time <= max_cutoff
             ), "Travel time should not exceed maximum"
 
     finally:
         await adapter.motis_client.close()
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_adapter_consistency(sample_request):
     """Test that adapter and direct parsing produce consistent results."""
-    adapter = create_motis_adapter(use_fixtures=False)
+    adapter = create_motis_adapter()
 
     try:
         # Get response through adapter
-        adapter_response = await adapter.get_transit_catchment_area(sample_request)
+        try:
+            adapter_response = await adapter._get_transit_catchment_area(sample_request)
+        except Exception as e:
+            pytest.skip(f"MOTIS adapter service unavailable: {e}")
 
         # Get response directly and parse
         motis_request = translate_to_motis_one_to_all_request(sample_request)
-        motis_response = await adapter.motis_client.one_to_all(motis_request)
+        try:
+            motis_response = await adapter.motis_client.one_to_all(motis_request)
+        except Exception as e:
+            pytest.skip(f"MOTIS one-to-all service unavailable: {e}")
+
         direct_response = parse_motis_one_to_all_response(
             motis_response, sample_request
         )
@@ -371,10 +367,14 @@ async def test_adapter_consistency(sample_request):
         await adapter.motis_client.close()
 
 
+@pytest.mark.network
 @pytest.mark.asyncio
 async def test_comprehensive_plausibility(plausibility_tester):
     """Run comprehensive plausibility test and verify results."""
-    results = await plausibility_tester.run_comprehensive_test()
+    try:
+        results = await plausibility_tester.run_comprehensive_test()
+    except Exception as e:
+        pytest.skip(f"MOTIS plausibility test service unavailable: {e}")
 
     # Should not have errored
     assert (

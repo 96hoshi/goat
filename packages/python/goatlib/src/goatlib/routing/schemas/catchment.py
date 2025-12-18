@@ -6,9 +6,10 @@ from goatlib.routing.schemas.base import (
     CatchmentAreaType,
     Coordinates,
 )
+from goatlib.routing.schemas.catchment_area_transit import TransitCatchmentAreaResponse
 
 
-class Catchment(BaseModel):
+class CatchmentRequest(BaseModel):
     """Schema for catchment area requests."""
 
     starting_points: List[Coordinates] = Field(
@@ -44,6 +45,22 @@ class Catchment(BaseModel):
             return v
         v.sort()
         return v
+
+
+class CatchmentResponse(BaseModel):
+    # TODO define a proper response schema
+    """Schema for catchment area responses."""
+
+    pt_catchment: TransitCatchmentAreaResponse = Field(
+        ...,
+        title="Public Transit Catchment Area Response",
+        description="Catchment area response from public transit calculation.",
+    )
+    last_mile_catchment: dict | None = Field(
+        ...,
+        title="Last Mile Catchment Area Response",
+        description="Catchment area response from last mile calculation.",
+    )
 
 
 # Example usage

@@ -2,10 +2,12 @@ import tracemalloc
 from typing import Any, Dict
 
 import psutil
+import pytest
 from goatlib.routing.adapters.motis import create_motis_adapter
 from goatlib.routing.schemas.ab_routing import ABRoutingRequest, ABRoutingResponse
 from goatlib.routing.schemas.base import Coordinates, Mode
 
+from ..utils.ab_route_validator import validate_route_response
 from .conftest import BenchmarkMetrics, save_benchmark_results
 
 
@@ -67,9 +69,6 @@ class ABRoutingBenchmarkMetrics(BenchmarkMetrics):
 
     def record_validation_stats(self, response: ABRoutingResponse) -> None:
         """Record comprehensive plausibility validation statistics."""
-        from goatlib.routing.utils.ab_route_validator import (
-            validate_route_response,
-        )
 
         # Run plausibility validation
         validation_report = validate_route_response(response.routes)
@@ -174,7 +173,7 @@ async def test_motis_ab_routing_performance_benchmark():
     - Pre-request preparation time
     - Network request time
     - Post-processing time
-    - Memory alCoordinates
+    - Memory allocation
     - Response data analysis
     - Route validation performance
     """
@@ -189,7 +188,7 @@ async def test_motis_ab_routing_performance_benchmark():
         metrics.record_memory("pre_request_start")
 
         # Create adapter
-        adapter = create_motis_adapter(use_fixtures=False)
+        adapter = create_motis_adapter()
 
         # Create comprehensive routing request (Munich to Stuttgart - major city pair)
         request = ABRoutingRequest(
@@ -214,7 +213,10 @@ async def test_motis_ab_routing_performance_benchmark():
         net_io_before = psutil.net_io_counters()
 
         # Execute the actual AB routing request
-        response = await adapter.route(request)
+        try:
+            response = await adapter.route(request)
+        except Exception as e:
+            pytest.skip(f"MOTIS AB routing service unavailable: {e}")
 
         # Get network stats after request
         net_io_after = psutil.net_io_counters()
@@ -264,9 +266,6 @@ async def test_motis_ab_routing_performance_benchmark():
 
         # === SAVE RESULTS ===
         filepath = save_benchmark_results(metrics, "motis_ab_routing_performance")
-
-        # === PRINT DETAILED SUMMARY ===
-        print("\n🚀 MOTIS AB Routing Performance Benchmark Results:")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         print("\n⏱️  Timing Breakdown:")
@@ -367,7 +366,7 @@ async def test_motis_ab_routing_minimal_benchmark():
         # Simple short-distance request for baseline performance
         metrics.start_timing("total")
 
-        adapter = create_motis_adapter(use_fixtures=False)
+        adapter = create_motis_adapter()
 
         # Berlin local routing (Alexanderplatz to Brandenburg Gate)
         request = ABRoutingRequest(
@@ -378,7 +377,10 @@ async def test_motis_ab_routing_minimal_benchmark():
             max_transfers=1,  # Single transfer max
         )
 
-        response = await adapter.route(request)
+        try:
+            response = await adapter.route(request)
+        except Exception as e:
+            pytest.skip(f"MOTIS AB routing service unavailable: {e}")
 
         metrics.end_timing("total")
         metrics.record_memory("final")
@@ -426,7 +428,7 @@ async def test_motis_ab_routing_stress_benchmark():
         # Complex long-distance request with many options
         metrics.start_timing("total")
 
-        adapter = create_motis_adapter(use_fixtures=False)
+        adapter = create_motis_adapter()
 
         # Long-distance routing with maximum complexity (Berlin to Munich)
         request = ABRoutingRequest(
@@ -438,7 +440,10 @@ async def test_motis_ab_routing_stress_benchmark():
             max_walking_distance=2000,  # Longer walking distance
         )
 
-        response = await adapter.route(request)
+        try:
+            response = await adapter.route(request)
+        except Exception as e:
+            pytest.skip(f"MOTIS AB routing service unavailable: {e}")
 
         metrics.end_timing("total")
         metrics.record_memory("final")

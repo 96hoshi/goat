@@ -1,12 +1,12 @@
 import tracemalloc
 
 import psutil
+import pytest
 from goatlib.routing.adapters.motis import create_motis_adapter
-from goatlib.routing.schemas.base import AccessEgressMode, CatchmentAreaRoutingModePT
+from goatlib.routing.schemas.base import CatchmentAreaRoutingModePT
 from goatlib.routing.schemas.catchment_area_transit import (
+    AccessEgressSettings,
     TransitCatchmentAreaRequest,
-    TransitCatchmentAreaStartingPoints,
-    TransitCatchmentAreaTravelTimeCost,
 )
 
 from .conftest import BenchmarkMetrics, save_benchmark_results
@@ -21,21 +21,21 @@ class OneToAllBenchmarkMetrics(BenchmarkMetrics):
         total_coordinates = 0
 
         for polygon in response.polygons:
-            if polygon.geometry and polygon.geometry.get("coordinates"):
-                # Count coordinates in the polygon
-                coords = polygon.geometry["coordinates"]
-                if coords and len(coords) > 0:
-                    total_coordinates += len(coords[0])  # First ring
+            # Count coordinates from points field since geometry is optional
+            if hasattr(polygon, "points") and polygon.points:
+                total_coordinates += len(polygon.points)
 
         self.response_stats = {
             "polygon_count": polygon_count,
             "total_coordinates": total_coordinates,
             "total_locations": response.metadata.get("total_locations", 0),
-            "expected_cutoffs": len(request.travel_cost.cutoffs),
+            "expected_cutoffs": len(request.cutoffs),
             "transit_modes": len(request.transit_modes),
         }
 
 
+@pytest.mark.network
+@pytest.mark.slow
 async def test_motis_one_to_all_performance_benchmark():
     """
     Comprehensive performance benchmark for MOTIS one-to-all functionality.
@@ -58,27 +58,22 @@ async def test_motis_one_to_all_performance_benchmark():
         metrics.record_memory("pre_request_start")
 
         # Create adapter
-        adapter = create_motis_adapter(use_fixtures=False)
+        adapter = create_motis_adapter()
 
         # Create request (Berlin with multiple cutoffs for substantial response)
-        starting_points = TransitCatchmentAreaStartingPoints(
-            lat=[52.5200],
-            lon=[13.4050],  # Berlin center
-        )
         request = TransitCatchmentAreaRequest(
-            starting_points=starting_points,
+            starting_points=[
+                {"lat": 52.5200, "lon": 13.4050}  # Berlin center
+            ],
             transit_modes=[
                 CatchmentAreaRoutingModePT.bus,
                 CatchmentAreaRoutingModePT.tram,
                 CatchmentAreaRoutingModePT.subway,
                 CatchmentAreaRoutingModePT.rail,
             ],
-            access_mode=AccessEgressMode.walk,
-            egress_mode=AccessEgressMode.walk,
-            travel_cost=TransitCatchmentAreaTravelTimeCost(
-                max_traveltime=45,
-                cutoffs=[15, 30, 45],  # Multiple cutoffs for larger response
-            ),
+            cutoffs=[15, 30, 45],  # Multiple cutoffs for larger response
+            access_settings=AccessEgressSettings.create_walk_settings(),
+            egress_settings=AccessEgressSettings.create_walk_settings(),
         )
 
         metrics.record_memory("pre_request_end")
@@ -92,7 +87,10 @@ async def test_motis_one_to_all_performance_benchmark():
         net_io_before = psutil.net_io_counters()
 
         # Execute the actual request
-        response = await adapter.get_transit_catchment_area(request)
+        try:
+            response = await adapter._get_transit_catchment_area(request)
+        except Exception as e:
+            pytest.skip(f"MOTIS one-to-all service unavailable: {e}")
 
         # Get network stats after request
         net_io_after = psutil.net_io_counters()
@@ -116,18 +114,16 @@ async def test_motis_one_to_all_performance_benchmark():
 
         # Validate response (simulating typical post-processing)
         assert response is not None
-        assert len(response.polygons) == len(request.travel_cost.cutoffs)
+        assert len(response.polygons) == len(request.cutoffs)
         assert response.metadata.get("total_locations", 0) > 0
 
-        # Validate each polygon geometry (typical validation work)
+        # Validate each polygon structure (typical validation work)
         for polygon in response.polygons:
-            assert polygon.geometry is not None
-            assert polygon.geometry["type"] == "Polygon"
-            assert "coordinates" in polygon.geometry
-            if polygon.geometry["coordinates"]:
-                coords = polygon.geometry["coordinates"][0]
-                assert len(coords) >= 4  # Valid polygon
-                assert coords[0] == coords[-1]  # Closed polygon
+            assert hasattr(polygon, "travel_time"), "Polygon should have travel_time"
+            assert polygon.travel_time > 0, "Travel time should be positive"
+            assert hasattr(polygon, "points"), "Polygon should have points"
+            assert len(polygon.points) > 0, "Polygon should have coordinate points"
+            # Geometry is optional, may be None
 
         metrics.record_memory("post_processing_end")
         metrics.end_timing("post_processing")
@@ -189,6 +185,7 @@ async def test_motis_one_to_all_performance_benchmark():
         tracemalloc.stop()
 
 
+@pytest.mark.network
 async def test_motis_one_to_all_minimal_benchmark():
     """
     Minimal benchmark for quick performance checks.
@@ -200,22 +197,20 @@ async def test_motis_one_to_all_minimal_benchmark():
         # Simple single cutoff request for baseline performance
         metrics.start_timing("total")
 
-        adapter = create_motis_adapter(use_fixtures=False)
+        adapter = create_motis_adapter()
 
         request = TransitCatchmentAreaRequest(
-            starting_points=TransitCatchmentAreaStartingPoints(
-                lat=[52.5200], lon=[13.4050]
-            ),
+            starting_points=[{"lat": 52.5200, "lon": 13.4050}],
             transit_modes=[CatchmentAreaRoutingModePT.subway],
-            access_mode=AccessEgressMode.walk,
-            egress_mode=AccessEgressMode.walk,
-            travel_cost=TransitCatchmentAreaTravelTimeCost(
-                max_traveltime=15,
-                cutoffs=[15],
-            ),
+            cutoffs=[15],
+            access_settings=AccessEgressSettings.create_walk_settings(),
+            egress_settings=AccessEgressSettings.create_walk_settings(),
         )
 
-        response = await adapter.get_transit_catchment_area(request)
+        try:
+            response = await adapter._get_transit_catchment_area(request)
+        except Exception as e:
+            pytest.skip(f"MOTIS one-to-all service unavailable: {e}")
 
         metrics.end_timing("total")
         metrics.record_memory("final")

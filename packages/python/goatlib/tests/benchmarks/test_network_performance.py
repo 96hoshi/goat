@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import psutil
+import pytest
 from goatlib.analysis.network.network_processor import InMemoryNetworkProcessor
 from goatlib.routing.schemas.base import Coordinates
 
@@ -398,3 +399,145 @@ def test_benchmark_memory_and_performance():
         logger.info(
             f"Scalability: {time_status} Time {time_scale_factor:.1f}x, {memory_status} Memory {memory_scale_factor:.1f}x, Edges {edge_scale_factor:.1f}x"
         )
+
+
+def test_benchmark_artificial_node_splitting():
+    """Benchmark artificial node splitting performance."""
+    test_file = Path(__file__).parent.parent / "data" / "network" / "network.parquet"
+
+    if not test_file.exists():
+        logger.error(f"Test file not found: {test_file}")
+        return
+    origin = Coordinates(lat=48.1351, lon=11.5820)
+    start_points = [
+        Coordinates(lat=origin.lat + i * 0.0001, lon=origin.lon + i * 0.0001)
+        for i in range(5)
+    ]
+
+    with InMemoryNetworkProcessor(input_path=str(test_file)) as proc:
+        # Load network once
+        subset_table = proc.load_network(center=origin, buffer_radius=400.0)
+        search_radius_m = 200.0
+        # Test artificial node creation multiple times
+        times = []
+        for i in range(10):
+            gc.collect()
+
+            t1 = time.perf_counter()
+
+            # Core artificial node creation
+            proc.create_artificial_nodes_for_points(
+                points=start_points,
+                search_radius_m=search_radius_m,
+                subset_table=subset_table,
+            )
+
+            t2 = time.perf_counter()
+            elapsed = (t2 - t1) * 1000
+            times.append(elapsed)
+
+        avg_time = sum(times) / len(times)
+        min_time = min(times)
+        max_time = max(times)
+
+        if avg_time < 5:
+            status = "✅"
+        elif avg_time < 10:
+            status = "✓"
+        else:
+            status = "⚠"
+            pytest.fail("Artificial node splitting too slow")
+
+        logger.info(
+            f"{status} Artificial node splitting: {avg_time:.2f}ms avg (range: {min_time:.2f}-{max_time:.2f}ms)"
+        )
+
+
+@pytest.mark.benchmark
+def test_benchmark_artificial_node_splitting_large():
+    """Test performance of create_artificial_nodes_for_points with larger datasets."""
+    test_file = Path(__file__).parent.parent / "data" / "network" / "network.parquet"
+
+    if not test_file.exists():
+        logger.error(f"Test file not found: {test_file}")
+        return
+
+    origin = Coordinates(lat=48.1351, lon=11.5820)
+
+    # Test with different sized datasets
+    test_sizes = [100, 200, 500]
+
+    for num_points in test_sizes:
+        logger.info(f"\n--- Testing with {num_points} points ---")
+
+        # Create random points around Munich
+        import random
+
+        random.seed(42)  # For reproducibility
+
+        start_points = []
+        for i in range(num_points):
+            # Generate points within reasonable distance from origin
+            lat_offset = random.uniform(-0.01, 0.01)  # ~1km radius
+            lon_offset = random.uniform(-0.01, 0.01)
+            start_points.append(
+                Coordinates(lat=origin.lat + lat_offset, lon=origin.lon + lon_offset)
+            )
+
+        with InMemoryNetworkProcessor(input_path=str(test_file)) as proc:
+            # Load network once
+            subset_table = proc.load_network(
+                center=origin, buffer_radius=2000.0
+            )  # Larger buffer for more points
+            search_radius_m = 200.0
+
+            # Measure performance over multiple runs
+            times = []
+            for _ in range(3):  # Fewer runs for large datasets
+                start_time = time.perf_counter()
+
+                result = proc.create_artificial_nodes_for_points(
+                    start_points, subset_table, search_radius_m=search_radius_m
+                )
+
+                end_time = time.perf_counter()
+
+                execution_time = (end_time - start_time) * 1000  # Convert to ms
+                times.append(execution_time)
+
+                # Verify result structure
+                assert result is not None
+                if isinstance(result, tuple):
+                    # Handle tuple return (file_path, node_ids)
+                    file_path, node_ids = result
+                    assert isinstance(file_path, str)
+                    assert file_path.endswith(".parquet")
+                    assert isinstance(node_ids, list)
+                else:
+                    # Handle string return
+                    assert isinstance(result, str)
+                    assert result.endswith(".parquet")
+
+            # Calculate statistics
+            avg_time = sum(times) / len(times)
+            min_time = min(times)
+            max_time = max(times)
+
+            # Adjust thresholds for larger datasets
+            if num_points <= 100:
+                threshold = 100  # 100ms for 100 points
+            elif num_points <= 200:
+                threshold = 300  # 300ms for 200 points
+            else:
+                threshold = 800  # 800ms for 500 points
+
+            if avg_time < threshold * 0.5:
+                status = "✅"
+            elif avg_time < threshold:
+                status = "✓"
+            else:
+                status = "⚠"
+
+            logger.info(
+                f"{status} Artificial node splitting ({num_points} points): {avg_time:.2f}ms avg (range: {min_time:.2f}-{max_time:.2f}ms, threshold: {threshold}ms)"
+            )
