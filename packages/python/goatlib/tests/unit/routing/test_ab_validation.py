@@ -9,6 +9,7 @@ from packages.python.goatlib.tests.utils.ab_route_validator import (
 )
 
 
+# Helper functions to create sample routes for testing
 def create_sample_route() -> ABRoute:
     """Create a sample route for testing."""
     origin = Coordinates(lat=48.1351, lon=11.5820)  # Munich center
@@ -87,6 +88,11 @@ def create_problematic_route() -> ABRoute:
     )
 
     return route
+
+
+# =====================================================================
+#  TESTS: AB Route Plausibility Validation
+# =====================================================================
 
 
 def test_good_route_validation() -> None:

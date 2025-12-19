@@ -9,7 +9,11 @@ from goatlib.routing.adapters.motis.motis_converters import (
     parse_motis_one_to_all_response,
     translate_to_motis_one_to_all_request,
 )
-from goatlib.routing.schemas.base import CatchmentAreaRoutingModePT
+from goatlib.routing.schemas.base import (
+    AccessEgressMode,
+    CatchmentAreaRoutingModePT,
+    Coordinates,
+)
 from goatlib.routing.schemas.catchment_area_transit import (
     AccessEgressSettings,
     TransitCatchmentAreaRequest,
@@ -18,33 +22,76 @@ from goatlib.routing.schemas.catchment_area_transit import (
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# FIXTURES
+# ============================================================================
+
+
+@pytest.fixture
+def motis_adapter_online():
+    """Fixture providing a MOTIS adapter instance for online tests."""
+    adapter = create_motis_adapter()
+    yield adapter
+    # Cleanup is handled in tests using async context
+
+
+@pytest.fixture
+def simple_berlin_request():
+    """Simple Berlin request for basic integration tests."""
+    return TransitCatchmentAreaRequest(
+        starting_points=[Coordinates(lat=52.520008, lon=13.404954)],
+        cutoffs=[15, 30],
+        transit_modes=[CatchmentAreaRoutingModePT.bus, CatchmentAreaRoutingModePT.tram],
+        access_settings=AccessEgressSettings.create_walk_settings(max_time=10),
+        egress_settings=AccessEgressSettings.create_walk_settings(max_time=10),
+    )
+
+
+@pytest.fixture
+def munich_request():
+    """Munich request for testing different scenarios."""
+    return TransitCatchmentAreaRequest(
+        starting_points=[Coordinates(lat=48.137154, lon=11.576124)],
+        cutoffs=[10, 20, 30],
+        transit_modes=[CatchmentAreaRoutingModePT.bus, CatchmentAreaRoutingModePT.tram],
+        access_settings=AccessEgressSettings.create_walk_settings(),
+        egress_settings=AccessEgressSettings.create_walk_settings(),
+    )
+
+
+@pytest.fixture
+def plausibility_tester():
+    """Fixture providing a MotisOneToAllPlausibilityTester instance."""
+    return MotisOneToAllPlausibilityTester()
+
+
+# ============================================================================
+# PLAUSIBILITY TESTER CLASS
+# ============================================================================
+
+
 class MotisOneToAllPlausibilityTester:
     """Comprehensive plausibility tester for MOTIS one-to-all responses."""
 
     def __init__(self):
         self.tolerance_meters = 1000  # 1km tolerance for location validation
-        self.max_reasonable_travel_time = (
-            120  # 2 hours max reasonable travel time (in minutes)
-        )
+        self.max_reasonable_travel_time = 120  # 2 hours max (minutes)
         self.min_locations_expected = 5  # Minimum locations we expect to reach
 
     def validate_raw_motis_response(self, motis_data: Dict[str, Any]) -> List[str]:
         """Validate the raw MOTIS response structure and content."""
         issues = []
 
-        # Check basic structure
         if not isinstance(motis_data, dict):
             issues.append("MOTIS response is not a dictionary")
             return issues
 
-        # Check for expected top-level fields
         if "all" not in motis_data:
             issues.append("Missing 'all' field in MOTIS response")
             return issues
 
         reachable_locations = motis_data.get("all", [])
 
-        # Validate reachable locations structure
         if not isinstance(reachable_locations, list):
             issues.append("'all' field is not a list")
             return issues
@@ -54,7 +101,6 @@ class MotisOneToAllPlausibilityTester:
                 f"Too few reachable locations: {len(reachable_locations)} < {self.min_locations_expected}"
             )
 
-        # Validate individual location entries
         for idx, location in enumerate(reachable_locations):
             location_issues = self._validate_location_entry(location, idx)
             issues.extend(location_issues)
@@ -66,19 +112,16 @@ class MotisOneToAllPlausibilityTester:
         issues = []
         prefix = f"Location {idx}:"
 
-        # Check required fields
         required_fields = ["place", "duration"]
         for field in required_fields:
             if field not in location:
                 issues.append(f"{prefix} Missing required field '{field}'")
                 continue
 
-        # Duration check (simplified - MOTIS is reliable)
         duration = location.get("duration", 0)
-        if duration > self.max_reasonable_travel_time:  # Duration is already in minutes
+        if duration > self.max_reasonable_travel_time:
             issues.append(f"{prefix} Unreasonably long travel time: {duration} min")
 
-        # Validate place information
         place = location.get("place", {})
         if not isinstance(place, dict):
             issues.append(f"{prefix} 'place' field is not a dictionary")
@@ -94,13 +137,11 @@ class MotisOneToAllPlausibilityTester:
         issues = []
         prefix = f"Location {idx} place:"
 
-        # Check for coordinate fields
         if "lon" not in place and "lng" not in place:
             issues.append(f"{prefix} Missing longitude field (lon/lng)")
         if "lat" not in place:
             issues.append(f"{prefix} Missing latitude field")
 
-        # Get longitude (handle both lon and lng)
         lon = place.get("lon", place.get("lng"))
         lat = place.get("lat")
 
@@ -125,7 +166,6 @@ class MotisOneToAllPlausibilityTester:
         adapter = create_motis_adapter()
 
         try:
-            # Create test request
             request = TransitCatchmentAreaRequest(
                 starting_points=[{"lat": 48.1351, "lon": 11.5820}],
                 transit_modes=[
@@ -137,14 +177,10 @@ class MotisOneToAllPlausibilityTester:
                 egress_settings=AccessEgressSettings.create_walk_settings(),
             )
 
-            # Get MOTIS response
             motis_request_data = translate_to_motis_one_to_all_request(request)
             motis_response = await adapter.motis_client.one_to_all(motis_request_data)
 
-            # Validate raw response
             raw_issues = self.validate_raw_motis_response(motis_response)
-
-            # Parse response and validate
             parsed_response = parse_motis_one_to_all_response(motis_response, request)
             parsed_issues = []
 
@@ -155,13 +191,11 @@ class MotisOneToAllPlausibilityTester:
             elif len(parsed_response.polygons) == 0:
                 parsed_issues.append("No polygons generated from response")
 
-            # Gather statistics
             reachable_locations = motis_response.get("all", [])
             travel_times = [loc.get("duration", 0) for loc in reachable_locations]
 
-            # Test adapter integration
             try:
-                adapter_response = await adapter.get_transit_catchment_area(request)
+                adapter_response = await adapter._get_transit_catchment_area(request)
                 adapter_polygon_count = (
                     len(adapter_response.polygons) if adapter_response else 0
                 )
@@ -173,7 +207,6 @@ class MotisOneToAllPlausibilityTester:
                 adapter_polygon_count = 0
                 direct_polygon_count = 0
 
-            # Compile results
             results = {
                 "timestamp": datetime.now().isoformat(),
                 "test_location": "Munich, Germany",
@@ -228,27 +261,175 @@ class MotisOneToAllPlausibilityTester:
                 await adapter.motis_client.close()
 
 
-@pytest.fixture
-def plausibility_tester():
-    """Fixture providing a MotisOneToAllPlausibilityTester instance."""
-    return MotisOneToAllPlausibilityTester()
+# ============================================================================
+# BASIC FUNCTIONALITY TESTS
+# ============================================================================
 
 
-@pytest.fixture
-def sample_request():
-    """Fixture providing a sample transit catchment area request."""
-    return TransitCatchmentAreaRequest(
-        starting_points=[
-            {"lat": 48.1351, "lon": 11.5820}  # Munich city center
-        ],
-        transit_modes=[
-            CatchmentAreaRoutingModePT.bus,
-            CatchmentAreaRoutingModePT.subway,
-        ],
-        cutoffs=[10, 20, 30],
+@pytest.mark.network
+async def test_basic_one_to_all_success(motis_adapter_online, simple_berlin_request):
+    """Test basic one-to-all functionality returns valid catchment areas."""
+    async with motis_adapter_online.motis_client:
+        response = await motis_adapter_online._get_transit_catchment_area(
+            simple_berlin_request
+        )
+
+    assert response is not None
+    assert len(response.polygons) == len(simple_berlin_request.cutoffs)
+    assert response.metadata.get("total_locations", 0) > 0
+    assert response.metadata.get("source") == "motis_one_to_all"
+
+    for polygon in response.polygons:
+        assert polygon.travel_time in simple_berlin_request.cutoffs
+        assert hasattr(polygon, "points")
+        assert isinstance(polygon.points, list)
+
+        if polygon.geometry is not None:
+            assert polygon.geometry["type"] == "Polygon"
+            assert "coordinates" in polygon.geometry
+        elif polygon.points:
+            polygon.set_geometry_from_points()
+            assert polygon.geometry["type"] == "Polygon"
+            assert "coordinates" in polygon.geometry
+
+
+async def test_multiple_cutoffs(motis_adapter_online, munich_request):
+    """Test that multiple travel time cutoffs generate correct polygons."""
+    async with motis_adapter_online.motis_client:
+        response = await motis_adapter_online._get_transit_catchment_area(
+            munich_request
+        )
+
+    assert len(response.polygons) == len(munich_request.cutoffs)
+    travel_times = [p.travel_time for p in response.polygons]
+    assert sorted(travel_times) == sorted(munich_request.cutoffs)
+
+
+@pytest.mark.network
+async def test_different_transit_modes(motis_adapter_online):
+    """Test different combinations of transit modes."""
+    rail_only_request = TransitCatchmentAreaRequest(
+        starting_points=[Coordinates(lat=52.5200, lon=13.4050)],
+        transit_modes=[CatchmentAreaRoutingModePT.rail],
+        cutoffs=[20],
         access_settings=AccessEgressSettings.create_walk_settings(),
         egress_settings=AccessEgressSettings.create_walk_settings(),
     )
+
+    async with motis_adapter_online.motis_client:
+        response = await motis_adapter_online._get_transit_catchment_area(
+            rail_only_request
+        )
+
+    assert len(response.polygons) == 1
+
+
+async def test_single_cutoff(motis_adapter_online):
+    """Test with a single travel time cutoff."""
+    single_cutoff_request = TransitCatchmentAreaRequest(
+        starting_points=[Coordinates(lat=48.1351, lon=11.5820)],
+        transit_modes=[
+            CatchmentAreaRoutingModePT.subway,
+            CatchmentAreaRoutingModePT.tram,
+        ],
+        cutoffs=[20],
+        access_settings=AccessEgressSettings.create_walk_settings(),
+        egress_settings=AccessEgressSettings.create_walk_settings(),
+    )
+
+    async with motis_adapter_online.motis_client:
+        response = await motis_adapter_online._get_transit_catchment_area(
+            single_cutoff_request
+        )
+
+    assert len(response.polygons) == 1
+    assert response.polygons[0].travel_time == 20
+
+
+async def test_geometry_structure(motis_adapter_online, simple_berlin_request):
+    """Test that returned geometry has correct GeoJSON structure."""
+    async with motis_adapter_online.motis_client:
+        response = await motis_adapter_online._get_transit_catchment_area(
+            simple_berlin_request
+        )
+
+    for polygon in response.polygons:
+        assert hasattr(polygon, "points")
+        assert isinstance(polygon.points, list)
+
+        if polygon.geometry is None:
+            polygon.set_geometry_from_points()
+
+        if polygon.points and polygon.geometry:
+            assert polygon.geometry["type"] == "Polygon"
+            assert "coordinates" in polygon.geometry
+            if polygon.geometry["coordinates"]:
+                coord_ring = polygon.geometry["coordinates"][0]
+                assert len(coord_ring) >= 4
+                assert len(coord_ring[0]) == 2
+                assert coord_ring[0] == coord_ring[-1]
+
+
+async def test_bike_access_egress(motis_adapter_online):
+    """Test catchment area with bicycle access and egress modes."""
+    bike_request = TransitCatchmentAreaRequest(
+        starting_points=[Coordinates(lat=52.5200, lon=13.4050)],
+        transit_modes=[CatchmentAreaRoutingModePT.bus, CatchmentAreaRoutingModePT.tram],
+        cutoffs=[25],
+        access_settings=AccessEgressSettings(
+            mode=AccessEgressMode.bicycle, max_time=15, speed=15.0
+        ),
+        egress_settings=AccessEgressSettings(
+            mode=AccessEgressMode.bicycle, max_time=15, speed=15.0
+        ),
+    )
+
+    async with motis_adapter_online.motis_client:
+        response = await motis_adapter_online._get_transit_catchment_area(bike_request)
+
+    assert len(response.polygons) == 1
+    assert response.polygons[0].travel_time == 25
+    assert bike_request.access_settings.mode == AccessEgressMode.bicycle
+    assert bike_request.egress_settings.mode == AccessEgressMode.bicycle
+
+
+async def test_invalid_coordinates_handling(motis_adapter_online):
+    """Test handling of coordinates in remote areas with no transit coverage."""
+    remote_request = TransitCatchmentAreaRequest(
+        starting_points=[Coordinates(lat=0.0, lon=-160.0)],
+        transit_modes=[CatchmentAreaRoutingModePT.bus],
+        cutoffs=[15],
+        access_settings=AccessEgressSettings.create_walk_settings(),
+        egress_settings=AccessEgressSettings.create_walk_settings(),
+    )
+
+    async with motis_adapter_online.motis_client:
+        response = await motis_adapter_online._get_transit_catchment_area(
+            remote_request
+        )
+
+    assert response is not None
+    assert len(response.polygons) <= len(remote_request.cutoffs)
+    assert response.metadata.get("total_locations", 0) == 0
+
+
+@pytest.mark.network
+async def test_motis_one_to_all_integration_minimal(simple_berlin_request):
+    """Minimal integration test that can run independently."""
+    adapter = create_motis_adapter()
+
+    try:
+        async with adapter.motis_client:
+            response = await adapter._get_transit_catchment_area(simple_berlin_request)
+        assert len(response.polygons) == len(simple_berlin_request.cutoffs)
+        assert response.metadata.get("source") == "motis_one_to_all"
+    finally:
+        await adapter.motis_client.close()
+
+
+# ============================================================================
+# PLAUSIBILITY AND VALIDATION TESTS
+# ============================================================================
 
 
 @pytest.mark.network
@@ -259,9 +440,11 @@ async def test_motis_one_to_all_raw_response_validation(plausibility_tester):
 
     try:
         request = TransitCatchmentAreaRequest(
-            starting_points=[{"lat": 48.1351, "lon": 11.5820}],
+            starting_points=[Coordinates(lat=48.1351, lon=11.5820)],
             transit_modes=[CatchmentAreaRoutingModePT.bus],
             cutoffs=[10, 20],
+            access_settings=AccessEgressSettings.create_walk_settings(),
+            egress_settings=AccessEgressSettings.create_walk_settings(),
         )
 
         motis_request = translate_to_motis_one_to_all_request(request)
@@ -270,22 +453,15 @@ async def test_motis_one_to_all_raw_response_validation(plausibility_tester):
         except Exception as e:
             pytest.skip(f"MOTIS one-to-all service unavailable: {e}")
 
-        # Validate response structure
         issues = plausibility_tester.validate_raw_motis_response(motis_response)
 
-        # Log any issues for debugging but allow minor issues
         if issues:
             logger.warning(f"Validation issues found: {issues}")
 
-        # Basic assertions
         assert isinstance(motis_response, dict), "Response should be a dictionary"
         assert "all" in motis_response, "Response should contain 'all' field"
         assert isinstance(motis_response["all"], list), "'all' field should be a list"
-
-        # Should have at least some reachable locations in Munich
-        assert (
-            len(motis_response["all"]) > 0
-        ), "Should have at least some reachable locations"
+        assert len(motis_response["all"]) > 0, "Should have reachable locations"
 
     finally:
         await adapter.motis_client.close()
@@ -293,29 +469,35 @@ async def test_motis_one_to_all_raw_response_validation(plausibility_tester):
 
 @pytest.mark.network
 @pytest.mark.asyncio
-async def test_motis_response_parsing(sample_request):
+async def test_motis_response_parsing(plausibility_tester):
     """Test that MOTIS response can be parsed into our internal format."""
     adapter = create_motis_adapter()
 
     try:
-        motis_request = translate_to_motis_one_to_all_request(sample_request)
+        request = TransitCatchmentAreaRequest(
+            starting_points=[Coordinates(lat=48.1351, lon=11.5820)],
+            transit_modes=[
+                CatchmentAreaRoutingModePT.bus,
+                CatchmentAreaRoutingModePT.subway,
+            ],
+            cutoffs=[10, 20, 30],
+            access_settings=AccessEgressSettings.create_walk_settings(),
+            egress_settings=AccessEgressSettings.create_walk_settings(),
+        )
+
+        motis_request = translate_to_motis_one_to_all_request(request)
         try:
             motis_response = await adapter.motis_client.one_to_all(motis_request)
         except Exception as e:
             pytest.skip(f"MOTIS one-to-all service unavailable: {e}")
 
-        # Parse the response
-        parsed_response = parse_motis_one_to_all_response(
-            motis_response, sample_request
-        )
+        parsed_response = parse_motis_one_to_all_response(motis_response, request)
 
-        # Validate parsed response
         assert parsed_response is not None, "Should successfully parse response"
         assert hasattr(parsed_response, "polygons"), "Should have polygons attribute"
         assert len(parsed_response.polygons) > 0, "Should generate at least one polygon"
 
-        # Check polygon structure
-        max_cutoff = max(sample_request.cutoffs)
+        max_cutoff = max(request.cutoffs)
         for polygon in parsed_response.polygons:
             assert hasattr(polygon, "travel_time"), "Polygon should have travel_time"
             assert polygon.travel_time > 0, "Travel time should be positive"
@@ -329,29 +511,35 @@ async def test_motis_response_parsing(sample_request):
 
 @pytest.mark.network
 @pytest.mark.asyncio
-async def test_adapter_consistency(sample_request):
+async def test_adapter_consistency(plausibility_tester):
     """Test that adapter and direct parsing produce consistent results."""
     adapter = create_motis_adapter()
 
     try:
-        # Get response through adapter
+        request = TransitCatchmentAreaRequest(
+            starting_points=[Coordinates(lat=48.1351, lon=11.5820)],
+            transit_modes=[
+                CatchmentAreaRoutingModePT.bus,
+                CatchmentAreaRoutingModePT.subway,
+            ],
+            cutoffs=[10, 20],
+            access_settings=AccessEgressSettings.create_walk_settings(),
+            egress_settings=AccessEgressSettings.create_walk_settings(),
+        )
+
         try:
-            adapter_response = await adapter._get_transit_catchment_area(sample_request)
+            adapter_response = await adapter._get_transit_catchment_area(request)
         except Exception as e:
             pytest.skip(f"MOTIS adapter service unavailable: {e}")
 
-        # Get response directly and parse
-        motis_request = translate_to_motis_one_to_all_request(sample_request)
+        motis_request = translate_to_motis_one_to_all_request(request)
         try:
             motis_response = await adapter.motis_client.one_to_all(motis_request)
         except Exception as e:
             pytest.skip(f"MOTIS one-to-all service unavailable: {e}")
 
-        direct_response = parse_motis_one_to_all_response(
-            motis_response, sample_request
-        )
+        direct_response = parse_motis_one_to_all_response(motis_response, request)
 
-        # Compare results
         assert adapter_response is not None, "Adapter should return a response"
         assert direct_response is not None, "Direct parsing should return a response"
 
@@ -376,17 +564,12 @@ async def test_comprehensive_plausibility(plausibility_tester):
     except Exception as e:
         pytest.skip(f"MOTIS plausibility test service unavailable: {e}")
 
-    # Should not have errored
     assert (
         "error" not in results
     ), f"Test should not error: {results.get('error', 'N/A')}"
-
-    # Should have basic structure
     assert "validation_results" in results
     assert "raw_response_stats" in results
     assert "parsed_response_stats" in results
-
-    # Should have found locations and generated polygons
     assert (
         results["raw_response_stats"]["total_locations"] > 0
     ), "Should find reachable locations"
@@ -394,7 +577,6 @@ async def test_comprehensive_plausibility(plausibility_tester):
         results["parsed_response_stats"]["polygon_count"] > 0
     ), "Should generate polygons"
 
-    # Log results for manual inspection
     logger.info(
         f"Plausibility test results: {json.dumps(results, indent=2, default=str)}"
     )
@@ -402,7 +584,6 @@ async def test_comprehensive_plausibility(plausibility_tester):
 
 def test_location_entry_validation(plausibility_tester):
     """Test validation of individual location entries."""
-    # Valid location entry
     valid_location = {
         "place": {"lat": 48.1351, "lon": 11.5820, "name": "Test Station"},
         "duration": 15,
@@ -411,10 +592,9 @@ def test_location_entry_validation(plausibility_tester):
     issues = plausibility_tester._validate_location_entry(valid_location, 0)
     assert len(issues) == 0, f"Valid location should have no issues: {issues}"
 
-    # Invalid location entry
     invalid_location = {
-        "place": {"lat": "invalid", "lng": 200},  # Invalid lat, lng out of bounds
-        "duration": 150,  # Too long travel time
+        "place": {"lat": "invalid", "lng": 200},
+        "duration": 150,
     }
 
     issues = plausibility_tester._validate_location_entry(invalid_location, 0)
@@ -423,17 +603,14 @@ def test_location_entry_validation(plausibility_tester):
 
 def test_place_data_validation(plausibility_tester):
     """Test validation of place data within location entries."""
-    # Valid place data
     valid_place = {"lat": 48.1351, "lon": 11.5820, "name": "Test Location"}
     issues = plausibility_tester._validate_place_data(valid_place, 0)
     assert len(issues) == 0, f"Valid place should have no issues: {issues}"
 
-    # Test lng vs lon handling
     place_with_lng = {"lat": 48.1351, "lng": 11.5820, "name": "Test Location"}
     issues = plausibility_tester._validate_place_data(place_with_lng, 0)
     assert len(issues) == 0, f"Place with lng field should be valid: {issues}"
 
-    # Invalid place data
-    invalid_place = {"lat": 200, "lon": -200}  # Out of bounds coordinates
+    invalid_place = {"lat": 200, "lon": -200}
     issues = plausibility_tester._validate_place_data(invalid_place, 0)
     assert len(issues) > 0, "Invalid place should have issues"

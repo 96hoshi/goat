@@ -20,6 +20,29 @@ from shapely.geometry import Point
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# FIXTURES
+# ============================================================================
+
+
+@pytest.fixture
+def pt_buffer_config() -> Dict[str, Any]:
+    """Single configuration for Public Transport Station Access."""
+    return {
+        "name": "pt_station_walk",
+        "title": "🚌 Public Transport Access",
+        "distances": [200, 400, 600],  # Walking distance from stations
+        "description": "Buffer zones around reachable stations",
+        "use_case": "Transit Coverage Analysis",
+    }
+
+
+@pytest.fixture
+def buffered_stations_dir(tmp_path):
+    """Temporary directory for buffered station outputs."""
+    return tmp_path / "buffered_stations"
+
+
 def create_pt_buffer_params(
     reachable_locations: List[Dict[str, Any]],
     config: Dict[str, Any],
@@ -63,22 +86,9 @@ def create_pt_buffer_params(
     )
 
 
-@pytest.fixture
-def pt_buffer_config() -> Dict[str, Any]:
-    """Single configuration for Public Transport Station Access."""
-    return {
-        "name": "pt_station_walk",
-        "title": "🚌 Public Transport Access",
-        "distances": [200, 400, 600],  # Walking distance from stations
-        "description": "Buffer zones around reachable stations",
-        "use_case": "Transit Coverage Analysis",
-    }
-
-
-@pytest.fixture
-def buffered_stations_dir(tmp_path):
-    """Temporary directory for buffered station outputs."""
-    return tmp_path / "buffered_stations"
+# ============================================================================
+# # TESTS
+# ============================================================================
 
 
 @pytest.mark.asyncio

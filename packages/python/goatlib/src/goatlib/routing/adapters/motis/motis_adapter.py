@@ -34,8 +34,9 @@ from .motis_converters import (
     translate_to_motis_request,
 )
 
-logger = logging.getLogger(__name__)
+# Momentary fix for test data path
 PATH = "/app/packages/python/goatlib/tests/data/network/network.parquet"
+logger = logging.getLogger(__name__)
 
 
 class MotisPlanApiAdapter(RoutingService):
@@ -55,17 +56,6 @@ class MotisPlanApiAdapter(RoutingService):
             motis_client: The MOTIS service client instance
         """
         self.motis_client = motis_client
-        self.network_path = PATH  # Set the default network path
-        self.transit_modes = [
-            CatchmentAreaRoutingModePT.bus,
-            CatchmentAreaRoutingModePT.tram,
-            CatchmentAreaRoutingModePT.subway,
-            CatchmentAreaRoutingModePT.rail,
-            CatchmentAreaRoutingModePT.ferry,
-            CatchmentAreaRoutingModePT.cable_car,
-            CatchmentAreaRoutingModePT.gondola,
-            CatchmentAreaRoutingModePT.funicular,
-        ]
 
     async def route(self: Self, request: ABRoutingRequest) -> ABRoutingResponse:
         """
@@ -112,8 +102,6 @@ class MotisPlanApiAdapter(RoutingService):
             raise RoutingError("An unexpected internal error occurred") from e
 
     async def get_isochrone(self, request: CatchmentRequest) -> CatchmentResponse:
-        test_file = PATH
-
         results: list[CutoffResult] = []
 
         try:
@@ -167,9 +155,8 @@ class MotisPlanApiAdapter(RoutingService):
             # ──────────────────────────────────────────────────────
             # 3. Rust routing (single call, multiple cutoffs)
             # ──────────────────────────────────────────────────────
-            network_processor_start = time.time()
 
-            with InMemoryNetworkProcessor(input_path=str(test_file)) as proc:
+            with InMemoryNetworkProcessor(input_path=str(PATH)) as proc:
                 logger.info(
                     f"Creating network subset around {motis_request.starting_points[0]}"
                 )
@@ -305,16 +292,8 @@ class MotisPlanApiAdapter(RoutingService):
 def create_motis_adapter(
     base_url: str = "https://api.transitous.org",
 ) -> MotisPlanApiAdapter:
-    """
-    Convenience function to create a MOTIS adapter instance.
+    """Factory function to create a MOTISPlanApiAdapter with a configured client."""
 
-    Args:
-        base_url: Base URL for the MOTIS API
-
-    Returns:
-        Configured MotisPlanApiAdapter instance
-
-    """
     motis_client = MotisServiceClient(
         base_url=base_url,
     )
