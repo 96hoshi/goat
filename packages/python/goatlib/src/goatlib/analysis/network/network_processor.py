@@ -34,7 +34,6 @@ class InMemoryNetworkProcessor:
         self._is_loaded = False
 
     # ==================== PUBLIC API METHODS ====================
-    # These are the main methods users will call
 
     @property
     def metadata(self) -> Metadata:
@@ -160,7 +159,7 @@ class InMemoryNetworkProcessor:
         except Exception as e:
             logger.debug(f"Could not create spatial index: {e}")
 
-        logger.debug(f"Loaded network subset in {elapsed:.3f}s")
+        logger.info(f"Network subset loaded: {elapsed:.3f}s")
 
         self._is_loaded = True
         return subset_table_name
@@ -315,21 +314,6 @@ class InMemoryNetworkProcessor:
         """
         Create ONE network file with artificial nodes for ALL points.
         Optimized version with batching and better memory management.
-
-        PERFORMANCE BOTTLENECK ANALYSIS:
-        1. **STARTUP OVERHEAD**: UUID generation and time calculations (~1ms)
-        2. **MEMORY SETUP**: Creating temporary tables and spatial indexes (~2-5ms)
-        3. **SPATIAL JOINS**: ST_DWithin operations for finding closest edges (~5-15ms)
-        4. **EDGE SPLITTING**: Complex geometry operations with ST_LineSubstring (~5-20ms)
-        5. **PARQUET EXPORT**: File I/O with compression and geometry serialization (~10-50ms)
-        6. **CLEANUP**: Dropping temporary tables (~1-2ms)
-
-        MAIN BOTTLENECKS FOR SMALL DATASETS (5 points):
-        - Fixed overhead from table creation/indexes dominates small workloads
-        - Geometry operations (ST_LineSubstring, ST_AsText) are expensive per operation
-        - Parquet export overhead is significant for small datasets
-        - Multiple SQL operations instead of single optimized query
-
         Args:
             stations: List of station coordinates
             subset_table: Pre-loaded network table name
@@ -340,22 +324,12 @@ class InMemoryNetworkProcessor:
         Returns:
             Tuple of (network_file_path, list_of_artificial_node_ids)
         """
-        logger.info(
-            f"Creating optimized network with artificial nodes for {len(points)} stations"
-        )
-
         if not points:
             return "", []
 
         artificial_node_start = time.time()
 
         try:
-            # OPTIMIZATION: Fast path for small datasets to avoid fixed overheads
-            if len(points) <= 10:
-                return self._create_artificial_nodes_fast_path(
-                    points, subset_table, search_radius_m, output_path
-                )
-
             # BOTTLENECK 1: File path generation and UUID creation (~0.5ms)
             # OPTIMIZATION: Could pre-generate paths or use simpler naming
             if output_path is None:
@@ -482,7 +456,6 @@ class InMemoryNetworkProcessor:
             edge_count = self.con.execute(
                 "SELECT COUNT(*) FROM temp_routing_network"
             ).fetchone()[0]
-            logger.info(f"Exporting {edge_count:,} edges to parquet")
 
             self.con.execute(f"""
                 COPY (
@@ -519,10 +492,10 @@ class InMemoryNetworkProcessor:
 
             # Enhanced performance logging
             logger.info(
-                f"Created optimized network: {len(points)} points → {edge_count:,} edges in {artificial_node_time:.3f}s"
+                f"Network with artificial nodes created: {len(points)} points → {edge_count:,} edges in {artificial_node_time:.3f}s"
             )
             logger.info(
-                f"Performance breakdown: processing={artificial_node_time-export_time:.3f}s, export={export_time:.3f}s"
+                f"Performance: processing={artificial_node_time-export_time:.3f}s, export={export_time:.3f}s"
             )
             logger.info(
                 f"Network file: {output_path} ({Path(output_path).stat().st_size / 1024 / 1024:.1f}MB)"
@@ -531,122 +504,11 @@ class InMemoryNetworkProcessor:
                 f"Node ID range: {base_node_id} to {base_node_id + len(points) - 1}"
             )
 
-            # PERFORMANCE SUMMARY FOR OPTIMIZATION:
-            # For 5 points, typical breakdown:
-            # - Setup (1-2ms): UUID, node IDs, table creation
-            # - Spatial operations (5-10ms): Spatial joins, distance calculations
-            # - Geometry operations (5-15ms): Edge splitting, line substrings
-            # - Export (10-40ms): File I/O, geometry to text conversion
-            #
-            # RECOMMENDED OPTIMIZATIONS:
-            # 1. Skip file export for small datasets, return in-memory data
-            # 2. Skip spatial indexing for < 50 points
-            # 3. Use simpler geometry operations or pre-computed lookup tables
-            # 4. Batch multiple calls to reuse setup overhead
-            # 5. Use faster serialization format or keep geometry binary
-
             return output_path, artificial_node_ids
 
         except Exception as e:
             logger.error(f"Failed to create single network: {e}")
             raise
-
-    def _create_artificial_nodes_fast_path(
-        self,
-        points: List[Coordinates],
-        subset_table: str,
-        search_radius_m: float,
-        output_path: Optional[str] = None,
-    ) -> Tuple[str, List[int]]:
-        """
-        Optimized fast path for small datasets (<= 10 points).
-        Avoids expensive table creation and spatial indexing overhead.
-        """
-        logger.debug(f"Using fast path for {len(points)} points")
-
-        if output_path is None:
-            output_path = f"{self._temp_dir}/routing_network_{int(time.time() * 1000) % 1000000}.parquet"
-
-        # Simple node ID generation
-        base_node_id = int(time.time() * 1000) % 1000000 + 1000000000
-        artificial_node_ids = [base_node_id + i for i in range(len(points))]
-
-        search_radius_deg = search_radius_m / 111320.0
-
-        # Build single optimized query without temporary tables
-        points_values = ", ".join(
-            [
-                f"({i}, {point.lat}, {point.lon}, {base_node_id + i})"
-                for i, point in enumerate(points)
-            ]
-        )
-
-        # Single query approach - much faster for small datasets
-        self.con.execute(f"""
-            COPY (
-                WITH points_data AS (
-                    SELECT station_idx, lat, lon, node_id,
-                           ST_MakePoint(lon, lat)::GEOMETRY as point_geom
-                    FROM (VALUES {points_values}) AS t(station_idx, lat, lon, node_id)
-                ),
-                closest_edges AS (
-                    SELECT DISTINCT ON (p.station_idx)
-                        p.station_idx, p.node_id,
-                        n.edge_id, n.source, n.target, n.length_m, n.geometry,
-                        ST_LineLocatePoint(n.geometry::GEOMETRY, p.point_geom) as frac
-                    FROM points_data p
-                    JOIN {subset_table} n ON ST_DWithin(
-                        n.geometry::GEOMETRY, 
-                        p.point_geom, 
-                        {search_radius_deg}
-                    )
-                    ORDER BY p.station_idx, ST_Distance(n.geometry::GEOMETRY, p.point_geom)
-                ),
-                all_edges AS (
-                    -- Original edges not being split
-                    SELECT 
-                        CAST(ROW_NUMBER() OVER (ORDER BY edge_id) + 1000000 AS INTEGER) as edge_id,
-                        CAST(source AS INTEGER) as source,
-                        CAST(target AS INTEGER) as target,
-                        length_m,
-                        ST_AsText(geometry) as geometry
-                    FROM {subset_table}
-                    WHERE edge_id NOT IN (SELECT edge_id FROM closest_edges)
-                    
-                    UNION ALL
-                    
-                    -- Split edge first part
-                    SELECT 
-                        CAST(ROW_NUMBER() OVER (ORDER BY edge_id, station_idx) + 2000000 AS INTEGER) as edge_id,
-                        source,
-                        node_id as target,
-                        GREATEST(0.1, length_m * GREATEST(0.01, frac)) as length_m,
-                        ST_AsText(ST_LineSubstring(geometry::GEOMETRY, 0.0, GREATEST(0.01, frac))) as geometry
-                    FROM closest_edges
-                    WHERE frac > 0.01
-                    
-                    UNION ALL
-                    
-                    -- Split edge second part  
-                    SELECT 
-                        CAST(ROW_NUMBER() OVER (ORDER BY edge_id, station_idx) + 3000000 AS INTEGER) as edge_id,
-                        node_id as source,
-                        target,
-                        GREATEST(0.1, length_m * GREATEST(0.01, 1.0 - frac)) as length_m,
-                        ST_AsText(ST_LineSubstring(geometry::GEOMETRY, GREATEST(0.01, frac), 1.0)) as geometry
-                    FROM closest_edges  
-                    WHERE frac < 0.99
-                )
-                SELECT edge_id, source, target, length_m, geometry
-                FROM all_edges
-                WHERE length_m > 0.1
-                ORDER BY edge_id
-            )
-            TO '{output_path}' (FORMAT PARQUET, COMPRESSION 'SNAPPY')
-        """)
-
-        logger.debug(f"Fast path completed: {output_path}")
-        return output_path, artificial_node_ids
 
     def interpolate_long_edges(
         self,
@@ -772,7 +634,6 @@ class InMemoryNetworkProcessor:
                 logger.warning(f"Failed to clean up temporary directory: {e}")
 
     # ==================== PRIVATE HELPER METHODS ====================
-    # Internal methods that support the public API
 
     def _setup_duckdb_extensions(self) -> None:
         """Configure DuckDB with optimized settings and error handling."""
@@ -784,7 +645,7 @@ class InMemoryNetworkProcessor:
         settings = [
             "SET threads TO 4;",
             "SET enable_progress_bar=false;",
-            "SET memory_limit='2GB';",  # Reasonable memory limit
+            "SET memory_limit='2GB';",
         ]
 
         for ext in extensions + settings:

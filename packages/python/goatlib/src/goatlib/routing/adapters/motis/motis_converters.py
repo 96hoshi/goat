@@ -481,5 +481,4 @@ def extract_bus_stations_for_buffering(
         place_data["duration_minutes"] = loc.get(fields.travel_time, 0)
         stations.append(place_data)
 
-    logger.info(f"Extracted {len(stations)} valid bus stations for buffering")
     return stations

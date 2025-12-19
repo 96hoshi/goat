@@ -84,13 +84,13 @@ class TransitCatchmentAreaRequest(BaseModel):
         ge=0,
         le=routing_settings.transit.max_transfers,
     )
-    access_settings: AccessEgressSettings = Field(
-        default_factory=AccessEgressSettings.create_walk_settings,
+    access_settings: Optional[AccessEgressSettings] = Field(
+        default=AccessEgressSettings.create_walk_settings,
         title="Access Settings",
         description="Configuration for accessing transit stops.",
     )
-    egress_settings: AccessEgressSettings = Field(
-        default_factory=AccessEgressSettings.create_walk_settings,
+    egress_settings: Optional[AccessEgressSettings] = Field(
+        default=AccessEgressSettings.create_walk_settings,
         title="Egress Settings",
         description="Configuration for egressing from transit stops.",
     )

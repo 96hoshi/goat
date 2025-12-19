@@ -9,6 +9,10 @@ from goatlib.routing.schemas.base import (
     CatchmentAreaRoutingModePT,
     Coordinates,
 )
+from goatlib.routing.schemas.catchment import (
+    CatchmentAreaType,
+    CatchmentRequest,
+)
 from goatlib.routing.schemas.catchment_area_transit import (
     AccessEgressSettings,
     TransitCatchmentAreaRequest,
@@ -17,20 +21,31 @@ from goatlib.routing.schemas.catchment_area_transit import (
 logger = logging.getLogger(__name__)
 
 
+# fixture of a standard catchment request in Munich
+@pytest.fixture
+def munich_catchment_request() -> CatchmentRequest:
+    """Create a standard Munich catchment area request."""
+    return CatchmentRequest(
+        starting_points=[
+            Coordinates(lat=48.1351, lon=11.5820)  # Munich center
+        ],
+        cutoffs=[15, 30, 45],  # 15, 30, and 45 minute isochrones
+        type=CatchmentAreaType.point,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.network
-async def test_complete_motis_rust_workflow():
+async def test_complete_motis_rust_workflow(munich_catchment_request: CatchmentRequest):
     """Complete MOTIS + Rust workflow using the correct adapter interface."""
-
-    logger.info("🚀 Starting complete MOTIS + Rust workflow...")
 
     # Test data path
     test_file = Path("/app/packages/python/goatlib/tests/data/network/network.parquet")
     if not test_file.exists():
+        logger.info(f"❌ Test file not found: {test_file}")
         pytest.skip(f"Test file not found: {test_file}")
 
     # Step 1: Use MOTIS adapter directly with the interface
-    logger.info("📡 Step 1: Getting transit catchment area from MOTIS...")
     center = Coordinates(lat=48.1351, lon=11.5820)  # Munich center
     motis_request = TransitCatchmentAreaRequest(
         starting_points=[center],  # Munich
@@ -55,14 +70,14 @@ async def test_complete_motis_rust_workflow():
 
         # Convert our request to MOTIS format and call directly
         motis_req = translate_to_motis_one_to_all_request(motis_request)
-        logger.info(f"🔄 MOTIS request: {motis_req}")
+        logger.info(f"MOTIS request: {motis_req}")
 
         raw_motis_response = await adapter.motis_client.one_to_all(motis_req)
-        logger.info("✅ MOTIS raw response received")
+        logger.info("MOTIS raw response received")
 
         # Extract stations from the raw response
         raw_stations = extract_bus_stations_for_buffering(raw_motis_response)
-        logger.info(f"📍 Extracted {len(raw_stations)} transit stations")
+        logger.info(f"Extracted {len(raw_stations)} transit stations")
 
         if not raw_stations:
             logger.info("❌ No stations found in MOTIS response")
@@ -87,6 +102,7 @@ async def test_complete_motis_rust_workflow():
                     "transit_time": station.get("duration_minutes", 0),
                 }
             )
+        # final_response = CatchmentResponse(last_mile_catchment=stations_data)
 
     except Exception as e:
         await adapter.motis_client.close()
@@ -96,8 +112,6 @@ async def test_complete_motis_rust_workflow():
     await adapter.motis_client.close()
 
     # Step 2: Process with Rust routing using the fast functions
-    logger.info("⚙️ Step 2: Testing Rust routing on transit stations...")
-
     successful_routing = 0
     total_reachable = 0
 
@@ -106,14 +120,13 @@ async def test_complete_motis_rust_workflow():
         subset_table = proc.load_network(
             center=center, buffer_radius=15000.0
         )  # 15km radius
-        logger.info(f"📊 Loaded network subset: {subset_table}")
+        logger.info(f"Loaded network subset: {subset_table}")
 
         # Process all stations in batch using calculate_multiple_isochrones
         station_coordinates = [
             Coordinates(lat=station["lat"], lon=station["lon"])
             for station in stations_data
         ]
-        logger.info(f"🔧 Processing {len(station_coordinates)} stations in batch...")
 
         try:
             # Create artificial nodes for all stations at once
@@ -124,7 +137,7 @@ async def test_complete_motis_rust_workflow():
             if isinstance(result, tuple):
                 output_path, artificial_node_ids = result
                 logger.info(
-                    f"📄 Created: {len(artificial_node_ids)} artificial nodes for {len(station_coordinates)} stations"
+                    f"Created: {len(artificial_node_ids)} artificial nodes for {len(station_coordinates)} stations"
                 )
 
                 # Use batch routing with calculate_multiple_isochrones
@@ -132,7 +145,7 @@ async def test_complete_motis_rust_workflow():
                     import fast_routing_py as routing
 
                     network = routing.load_network(output_path)
-                    max_cost = 5  # 5 minutes
+                    max_cost = 300  # 5 minutes in seconds
 
                     # Use calculate_multiple_isochrones for all stations at once
                     routing_results = network.calculate_multiple_isochrones(
@@ -166,7 +179,6 @@ async def test_complete_motis_rust_workflow():
         (successful_routing / len(stations_data) * 100) if stations_data else 0
     )
     logger.info(f"   MOTIS stations found: {len(stations_data)}")
-    logger.info(f"   Stations tested: {len(stations_data)}")
     logger.info(f"   Successful routing: {successful_routing}")
     logger.info(f"   Success rate: {success_rate:.1f}%")
     logger.info(f"   Total reachable nodes: {total_reachable:,}")
@@ -177,104 +189,3 @@ async def test_complete_motis_rust_workflow():
         successful_routing > 0
     ), "Should successfully route from at least some stations"
     assert total_reachable > 0, "Should find reachable nodes"
-
-    logger.info("✅ Complete MOTIS + Rust workflow successful!")
-
-
-def test_routing_compatibility():
-    """Test that artificial nodes output can be loaded by the Rust routing library."""
-
-    # Test data path
-    test_file = Path("/app/packages/python/goatlib/tests/data/network/network.parquet")
-
-    if not test_file.exists():
-        logger.info(f"❌ Test file not found: {test_file}")
-        pytest.fail("Routing compatibility test failed: test file missing")
-
-    logger.info("🧪 Testing routing compatibility...")
-
-    try:
-        # Create some test points around Munich
-        origin = Coordinates(lat=48.1351, lon=11.5820)
-        start_points = [
-            Coordinates(lat=origin.lat + i * 0.001, lon=origin.lon + i * 0.001)
-            for i in range(10)  # Test with 10 points
-        ]
-
-        logger.info(f"📍 Testing with {len(start_points)} points around Munich")
-
-        with InMemoryNetworkProcessor(input_path=str(test_file)) as proc:
-            # Load network subset
-            subset_table = proc.load_network(center=origin, buffer_radius=1000.0)
-            logger.info(f"📊 Loaded network subset: {subset_table}")
-
-            # Create artificial nodes
-            logger.info("🔧 Creating artificial nodes...")
-            result = proc.create_artificial_nodes_for_points(
-                start_points, subset_table, search_radius_m=200.0
-            )
-
-            if isinstance(result, tuple):
-                output_path, artificial_node_ids = result
-                logger.info(" Created artificial nodes:")
-                logger.info(f"   📄 File: {output_path}")
-                logger.info(f"   🔢 Node IDs: {len(artificial_node_ids)} nodes")
-                logger.info(f"   🆔 First few IDs: {artificial_node_ids[:5]}")
-            else:
-                output_path = result
-                artificial_node_ids = None
-                logger.info(f"✅ Created network file: {output_path}")
-
-            # Verify file exists and has content
-            if not os.path.exists(output_path):
-                logger.info(f"❌ Output file not found: {output_path}")
-                pytest.fail("Routing compatibility test failed: output file missing")
-
-            file_size = os.path.getsize(output_path) / 1024  # KB
-            logger.info(f"📏 File size: {file_size:.1f} KB")
-
-            # Try to import the routing library
-            try:
-                import fast_routing_py as routing
-
-                # Test loading the network
-                logger.info("🔌 Loading network into routing library...")
-                network = routing.load_network(output_path)
-                logger.info("✅ Network loaded successfully into routing library!")
-
-                # If we have artificial node IDs, test routing
-                if artificial_node_ids and len(artificial_node_ids) > 0:
-                    logger.info("🧭 Testing routing calculation...")
-
-                    # Test with first artificial node
-                    start_node = artificial_node_ids[0]
-                    max_cost = 300  # 5 minutes in seconds
-                    logging.info(
-                        f"   Calculating isochrone from node {start_node} with max cost {max_cost}s..."
-                    )
-                    result = network.calculate_isochrone_multiple_times(
-                        start_node=start_node, time_thresholds=[max_cost]
-                    )
-
-                    if result and len(result) > 0:
-                        logger.info(
-                            f"   📈 Reachable nodes: {result[0].reachable_nodes}"
-                        )
-                        logger.info(f"   ⏱️  Max cost: {max_cost}s")
-                    else:
-                        logger.info("⚠️  Routing returned empty result")
-
-            except ImportError as e:
-                logger.info(f"⚠️  Could not import fast_routing_py: {e}")
-                pytest.fail(f"Routing compatibility test failed: {e}")
-
-            except Exception as e:
-                logger.info(f"❌ Error testing routing library: {e}")
-                pytest.fail(f"Routing compatibility test failed: {e}")
-
-    except Exception as e:
-        logger.info(f"❌ Test failed: {e}")
-        import traceback
-
-        traceback.logger.info_exc()
-        pytest.fail(f"Routing compatibility test failed: {e}")

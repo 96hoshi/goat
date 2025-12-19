@@ -1,12 +1,13 @@
-from typing import List
+from typing import Any, Dict, List, Optional
 
+from core.schemas.catchment_area import CatchmentAreaRoutingModePT
 from pydantic import BaseModel, Field, field_validator
 
 from goatlib.routing.schemas.base import (
     CatchmentAreaType,
     Coordinates,
 )
-from goatlib.routing.schemas.catchment_area_transit import TransitCatchmentAreaResponse
+from goatlib.routing.schemas.catchment_area_transit import AccessEgressSettings
 
 
 class CatchmentRequest(BaseModel):
@@ -18,18 +19,33 @@ class CatchmentRequest(BaseModel):
         description="List of geographic Coordinates for catchment calculation starting points.",
         min_length=1,
     )
-
     cutoffs: List[float] = Field(
         ...,
         title="Cutoffs",
         description="List of cost thresholds for catchment area calculation (time in minutes or distance in meters).",
         min_length=1,
     )
-
     type: CatchmentAreaType = Field(
         ...,
         title="Area Type",
         description="The type of catchment area output to generate.",
+    )
+
+    transit_modes: Optional[List[CatchmentAreaRoutingModePT]] = Field(
+        default=None,
+        title="Transit Modes",
+        description="List of public transit modes. If None, PT catchment is skipped.",
+    )
+    access_settings: Optional[AccessEgressSettings] = Field(
+        default_factory=AccessEgressSettings.create_walk_settings,
+        title="Access Settings",
+        description="Configuration for accessing the first transit stop. Defaults to walking.",
+    )
+    egress_settings: Optional[AccessEgressSettings] = Field(
+        # Default to a 15-minute walk. The caller can override this.
+        default_factory=AccessEgressSettings.create_walk_settings,
+        title="Egress Settings",
+        description="Configuration for the last-mile (egress) leg from transit stops or the origin. If None, the last-mile calculation is skipped.",
     )
 
     @field_validator("cutoffs")
@@ -47,19 +63,25 @@ class CatchmentRequest(BaseModel):
         return v
 
 
-class CatchmentResponse(BaseModel):
-    # TODO define a proper response schema
-    """Schema for catchment area responses."""
+class CutoffResult(BaseModel):
+    """Schema for the aggregated result of a single cutoff time."""
 
-    pt_catchment: TransitCatchmentAreaResponse = Field(
-        ...,
-        title="Public Transit Catchment Area Response",
-        description="Catchment area response from public transit calculation.",
+    cutoff_minutes: int
+    pt_stations_found: Optional[int] = None  # It might not be calculated
+    successful_routing: int
+    total_reachable_nodes: int
+    raw_response: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Raw response data from the routing engine",
     )
-    last_mile_catchment: dict | None = Field(
-        ...,
-        title="Last Mile Catchment Area Response",
-        description="Catchment area response from last mile calculation.",
+
+
+class CatchmentResponse(BaseModel):
+    """Schema for the final catchment area response."""
+
+    results: List[CutoffResult]
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Metadata about the calculation process."
     )
 
 
