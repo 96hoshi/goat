@@ -6,6 +6,34 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 
 
+def _get_windmill_token() -> str:
+    """Get Windmill token from environment or file.
+
+    Checks in order:
+    1. WINDMILL_TOKEN environment variable
+    2. WINDMILL_TOKEN_FILE environment variable (path to file containing token)
+    3. Default token file location (/app/data/windmill/.token)
+    """
+    # First try environment variable
+    token = os.getenv("WINDMILL_TOKEN", "")
+    if token:
+        return token
+
+    # Try token file from environment
+    token_file = os.getenv("WINDMILL_TOKEN_FILE")
+    if token_file and os.path.exists(token_file):
+        with open(token_file) as f:
+            return f.read().strip()
+
+    # Try default token file location
+    default_token_file = "/app/data/windmill/.token"
+    if os.path.exists(default_token_file):
+        with open(default_token_file) as f:
+            return f.read().strip()
+
+    return ""
+
+
 class Settings(BaseSettings):
     """Application settings."""
 
@@ -38,7 +66,11 @@ class Settings(BaseSettings):
     # Windmill settings for job execution
     WINDMILL_URL: str = os.getenv("WINDMILL_URL", "http://windmill-server:8000")
     WINDMILL_WORKSPACE: str = os.getenv("WINDMILL_WORKSPACE", "goat")
-    WINDMILL_TOKEN: str = os.getenv("WINDMILL_TOKEN", "")
+
+    @property
+    def WINDMILL_TOKEN(self) -> str:
+        """Get Windmill token from environment or file."""
+        return _get_windmill_token()
 
     # DuckLake settings
     DUCKLAKE_CATALOG_SCHEMA: str = os.getenv("DUCKLAKE_CATALOG_SCHEMA", "ducklake")

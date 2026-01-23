@@ -80,7 +80,7 @@ async def get_user_token(
                 logger.warning(f"Failed to decode token in AUTH=False mode: {e}")
         # Fall back to mock user only if no token provided
         return {
-            "sub": "00000000-0000-0000-0000-000000000000",
+            "sub": "744e4fd1-685c-495c-8b02-efebce875359",
             "preferred_username": "dev_user",
             "email": "dev@example.com",
         }
@@ -144,8 +144,19 @@ async def get_optional_user_id(
     Returns:
         User UUID or None if no valid token
     """
-    # if not settings.AUTH:
-    #     return UUID("00000000-0000-0000-0000-000000000000")
+    # If auth is disabled, return mock user ID
+    if not settings.AUTH:
+        # Try to decode token if present (for real user ID)
+        if token:
+            try:
+                user_token = decode_token(token)
+                user_id = user_token.get("sub")
+                if user_id:
+                    return UUID(user_id)
+            except (JOSEError, ValueError, TypeError):
+                pass
+        # Fall back to mock user
+        return UUID("744e4fd1-685c-495c-8b02-efebce875359")
 
     # Try to get token
     if not token:

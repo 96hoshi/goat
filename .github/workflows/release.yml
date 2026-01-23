@@ -31,7 +31,7 @@ jobs:
   release-docker-web:
     needs: [file-changes, lint]
     if: needs.file-changes.outputs.web == 'true' || startsWith(github.ref, 'refs/tags/v')
-    uses: plan4better/.github/.github/workflows/reusable-docker-build.yml@main
+    uses: ./.github/workflows/reusable-docker-build.yml
     permissions:
       contents: read
       packages: write
@@ -41,13 +41,13 @@ jobs:
       ghcr-enable: true
       push: ${{ github.event_name != 'pull_request' }}
       file: ./apps/web/Dockerfile
-      image-names: |
-        ghcr.io/${{ github.repository }}/web
+      platforms: linux/amd64
+      image-name: ghcr.io/${{ github.repository }}/web
 
   release-docker-core:
     needs: [file-changes, lint]
     if: needs.file-changes.outputs.core == 'true' || startsWith(github.ref, 'refs/tags/v')
-    uses: plan4better/.github/.github/workflows/reusable-docker-build.yml@main
+    uses: ./.github/workflows/reusable-docker-build.yml
     permissions:
       contents: read
       packages: write
@@ -57,8 +57,8 @@ jobs:
       ghcr-enable: true
       push: ${{ github.event_name != 'pull_request' }}
       file: ./apps/core/Dockerfile
-      image-names: |
-        ghcr.io/${{ github.repository }}/core
+      platforms: linux/amd64
+      image-name: ghcr.io/${{ github.repository }}/core
 
   release-docker-geoapi:
     needs: [file-changes, lint]

@@ -21,7 +21,7 @@ export const contentMetadataSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().optional(),
   tags: z.array(z.string()).optional().nullable(),
-  thumbnail_url: z.string().url().optional(),
+  thumbnail_url: z.string().optional(),
 });
 
 export const dataLicense = z.enum([

@@ -2,14 +2,15 @@
 # GOAT Docker Compose
 # =============================================================================
 # Profiles:
-#   - (none): Infrastructure + Windmill (db, minio, rabbitmq, redis, windmill)
-#   - dev: Adds devcontainer (goat-dev)
-#   - prod: Adds application services (core, geoapi, web)
+#   - (none): Infrastructure only (db, minio, rabbitmq, redis, windmill-server,
+#             windmill-worker-default)
+#   - dev: + devcontainer, tools worker with local goatlib mount, print worker
+#   - prod: + core, geoapi, web, processes, tools/print workers, init scripts
 #
 # Usage:
-#   docker compose up                    # Infrastructure + Windmill
-#   docker compose --profile dev up      # + devcontainer
-#   docker compose --profile prod up     # + core, geoapi, web
+#   docker compose up                    # Infrastructure only
+#   docker compose --profile dev up      # + dev environment
+#   docker compose --profile prod up     # + production services
 # =============================================================================
 
 x-env-base: &env-base
@@ -55,8 +56,65 @@ x-env-print: &env-print
   S3_BUCKET_NAME: ${S3_BUCKET_NAME}
   S3_REGION_NAME: ${S3_REGION_NAME:-us-east-1}
 
+x-env-tools: &env-tools
+  <<: *env-windmill
+  MODE: worker
+  WORKER_GROUP: tools
+  WORKER_TAGS: tools
+  JOB_DEFAULT_TIMEOUT: 600
+  PYTHONDONTWRITEBYTECODE: "1"
+  WHITELIST_ENVS: "POSTGRES_SERVER,POSTGRES_PORT,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,POSTGRES_DATABASE_URI,DUCKLAKE_DATA_DIR,DUCKLAKE_CATALOG_SCHEMA,TILES_DATA_DIR,S3_PROVIDER,S3_ENDPOINT_URL,S3_PUBLIC_ENDPOINT_URL,S3_ACCESS_KEY_ID,S3_SECRET_ACCESS_KEY,S3_BUCKET_NAME,S3_REGION_NAME,OD_MATRIX_BASE_PATH,GTFS_DATA_PATH,GOAT_ROUTING_URL,GOAT_ROUTING_AUTHORIZATION,R5_URL,R5_REGION_MAPPING_PATH,GEOCODING_URL,GEOCODING_AUTHORIZATION"
+  POSTGRES_SERVER: ${POSTGRES_SERVER}
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  POSTGRES_DB: ${POSTGRES_DB}
+  POSTGRES_DATABASE_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_SERVER}:5432/${POSTGRES_DB}
+  DUCKLAKE_DATA_DIR: /app/data/ducklake
+  DUCKLAKE_CATALOG_SCHEMA: ducklake
+  TILES_DATA_DIR: /app/data/tiles
+  S3_PROVIDER: ${S3_PROVIDER:-hetzner}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
+  S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-${S3_ENDPOINT_URL}}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+  S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+  S3_REGION_NAME: ${S3_REGION_NAME:-us-east-1}
+  OD_MATRIX_BASE_PATH: /app/data/traveltime_matrices
+  GTFS_DATA_PATH: /app/data/gtfs
+  GOAT_ROUTING_URL: ${GOAT_ROUTING_URL:-http://goat-dev:8200/api/v2/routing}
+  GOAT_ROUTING_AUTHORIZATION: ${GOAT_ROUTING_AUTHORIZATION}
+  R5_URL: ${R5_URL:-https://r5.routing.plan4better.de}
+  R5_REGION_MAPPING_PATH: /app/data/gtfs/r5_region_mapping.parquet
+  GEOCODING_URL: ${GEOCODING_URL}
+  GEOCODING_AUTHORIZATION: ${GEOCODING_AUTHORIZATION}
+
+x-worker-tools-base: &worker-tools-base
+  image: ghcr.io/plan4better/goat/windmill-worker-tools:latest
+  build:
+    context: .
+    dockerfile: apps/processes/workers/Dockerfile
+    target: worker-tools
+  restart: unless-stopped
+  networks:
+    - goat
+  environment:
+    <<: *env-tools
+  depends_on:
+    - windmill-server
+
+x-worker-print-base: &worker-print-base
+  image: ghcr.io/plan4better/goat/windmill-worker-print:latest
+  build:
+    context: .
+    dockerfile: apps/processes/workers/Dockerfile
+    target: worker-print
+  restart: unless-stopped
+  depends_on:
+    - windmill-server
+
 x-service-core: &service-core
-  image: ghcr.io/plan4better/goat/core:2.3.9
+  image: ghcr.io/plan4better/goat/core:latest
   build:
     context: .
     dockerfile: apps/core/Dockerfile
@@ -73,6 +131,9 @@ x-service-core: &service-core
 networks:
   goat:
     name: goat
+
+volumes:
+  goat-data:
 
 services:
   # ===========================================================================
@@ -131,7 +192,7 @@ services:
     ports:
       - 5432:5432
     volumes:
-      - ./data/db:/storage/data
+      - goat-data:/storage/data
       - ./scripts/db/init-db.sql:/rds/init/init-db.sql:ro
 
   minio:
@@ -143,9 +204,9 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
-    command: ["server", "--console-address", ":9001", "/data"]
+    command: ["server", "--console-address", ":9001", "/data/s3"]
     volumes:
-      - ./data/s3:/data:z
+      - goat-data:/data
     healthcheck:
       test: "mc ready local"
       interval: 2s
@@ -171,10 +232,6 @@ services:
       exit 0;
       "
 
-  # ===========================================================================
-  # Message Queue & Cache
-  # ===========================================================================
-
   rabbitmq:
     image: rabbitmq:4.0.3-management
     networks:
@@ -190,12 +247,11 @@ services:
     command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
 
   # ===========================================================================
-  # Windmill (workflow engine)
+  # Windmill - Workflow Engine (always on)
   # ===========================================================================
 
-  # Windmill Server - API, UI, scheduler
   windmill-server:
-    image: ghcr.io/plan4better/goat/windmill-server:2.3.9
+    image: ghcr.io/plan4better/goat/windmill-server:latest
     build:
       context: .
       dockerfile: apps/processes/workers/Dockerfile
@@ -212,9 +268,8 @@ services:
       db:
         condition: service_healthy
 
-  # Windmill Worker - Default (cron jobs, system tasks)
   windmill-worker-default:
-    image: ghcr.io/plan4better/goat/windmill-worker-default:2.3.9
+    image: ghcr.io/plan4better/goat/windmill-worker-default:latest
     build:
       context: .
       dockerfile: apps/processes/workers/Dockerfile
@@ -230,106 +285,54 @@ services:
     depends_on:
       - windmill-server
 
-  # Windmill Worker - Tools (analytics: buffer, heatmap, isochrone, etc.)
+  # ===========================================================================
+  # Windmill Workers - Analytics & Print (profile: prod/dev)
+  # ===========================================================================
+
+  # Tools worker (analytics: buffer, heatmap, isochrone, etc.)
   windmill-worker-tools:
-    image: ghcr.io/plan4better/goat/windmill-worker-tools:2.3.9
-    build:
-      context: .
-      dockerfile: apps/processes/workers/Dockerfile
-      target: worker-tools
-    restart: unless-stopped
-    networks:
-      - goat
-    environment:
-      <<: *env-windmill
-      MODE: worker
-      WORKER_GROUP: tools
-      WORKER_TAGS: tools
-      JOB_DEFAULT_TIMEOUT: 600
-      PYTHONDONTWRITEBYTECODE: "1"
-      # Pass env vars to Windmill job execution (comma-separated list)
-      WHITELIST_ENVS: "POSTGRES_SERVER,POSTGRES_PORT,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,POSTGRES_DATABASE_URI,DUCKLAKE_DATA_DIR,DUCKLAKE_CATALOG_SCHEMA,TILES_DATA_DIR,S3_PROVIDER,S3_ENDPOINT_URL,S3_PUBLIC_ENDPOINT_URL,S3_ACCESS_KEY_ID,S3_SECRET_ACCESS_KEY,S3_BUCKET_NAME,S3_REGION_NAME,OD_MATRIX_BASE_PATH,GTFS_DATA_PATH,GOAT_ROUTING_URL,GOAT_ROUTING_AUTHORIZATION,R5_URL,R5_REGION_MAPPING_PATH,GEOCODING_URL,GEOCODING_AUTHORIZATION"
-      # Tool environment variables
-      POSTGRES_SERVER: ${POSTGRES_SERVER}
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_DATABASE_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_SERVER}:5432/${POSTGRES_DB}
-      DUCKLAKE_DATA_DIR: /app/data/ducklake
-      DUCKLAKE_CATALOG_SCHEMA: ducklake
-      TILES_DATA_DIR: /app/data/tiles
-      S3_PROVIDER: ${S3_PROVIDER:-hetzner}
-      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
-      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-${S3_ENDPOINT_URL}}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
-      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
-      S3_REGION_NAME: ${S3_REGION_NAME:-us-east-1}
-      OD_MATRIX_BASE_PATH: /app/data/traveltime_matrices
-      GTFS_DATA_PATH: /app/data/gtfs
-      GOAT_ROUTING_URL: ${GOAT_ROUTING_URL:-http://goat-dev:8200/api/v2/routing}
-      GOAT_ROUTING_AUTHORIZATION: ${GOAT_ROUTING_AUTHORIZATION}
-      R5_URL: ${R5_URL:-https://r5.routing.plan4better.de}
-      R5_REGION_MAPPING_PATH: /app/data/gtfs/r5_region_mapping.parquet
-      GEOCODING_URL: ${GEOCODING_URL}
-      GEOCODING_AUTHORIZATION: ${GEOCODING_AUTHORIZATION}
+    profiles: [prod]
+    <<: *worker-tools-base
+    volumes:
+      - goat-data:/app/data
+
+  windmill-worker-tools-dev:
+    profiles: [dev]
+    <<: *worker-tools-base
     volumes:
       - ./packages/python/goatlib/src/goatlib:/venv/lib/python3.11/site-packages/goatlib:ro
-      - ./data/ducklake:/app/data/ducklake
-      - ./data/tiles:/app/data/tiles
-      - ./data/traveltime_matrices:/app/data/traveltime_matrices:ro
-      - ./data/gtfs:/app/data/gtfs:ro
-    depends_on:
-      - windmill-server
+      - goat-data:/app/data
 
-  # Windmill Worker - Print (PDF reports, thumbnails)
-  # Standard version for prod environment
+  # Print worker (PDF reports, thumbnails)
   windmill-worker-print:
     profiles: [prod]
-    image: ghcr.io/plan4better/goat/windmill-worker-print:2.3.9
-    build:
-      context: .
-      dockerfile: apps/processes/workers/Dockerfile
-      target: worker-print
-    restart: unless-stopped
+    <<: *worker-print-base
     networks:
       - goat
     environment:
       <<: [*env-windmill, *env-print]
       PRINT_BASE_URL: ${PRINT_BASE_URL:-http://web:3000}
     volumes:
-      - ./packages/python/goatlib/src/goatlib:/venv/lib/python3.11/site-packages/goatlib:ro
-      - ./data/ducklake:/app/data/ducklake:ro
-    depends_on:
-      - windmill-server
+      - goat-data:/app/data:ro
 
-  # Windmill Worker - Print (dev version)
-  # Uses network_mode to share network with goat-dev so localhost reaches the dev services
   windmill-worker-print-dev:
     profiles: [dev]
-    image: ghcr.io/plan4better/goat/windmill-worker-print:2.3.9
-    build:
-      context: .
-      dockerfile: apps/processes/workers/Dockerfile
-      target: worker-print
-    restart: unless-stopped
-    # Share network namespace with goat-dev so localhost/127.0.0.1 works in Playwright
+    <<: *worker-print-base
+    # Share network with goat-dev so localhost reaches dev services
     network_mode: "service:goat-dev"
     environment:
       <<: *env-print
-      # Connect to Windmill via goat network hostname (since we're in goat-dev's network)
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/windmill?sslmode=disable
       DISABLE_NSJAIL: "true"
-      # localhost works since we share network with goat-dev
       PRINT_BASE_URL: http://localhost:3000
     volumes:
       - ./packages/python/goatlib/src/goatlib:/venv/lib/python3.11/site-packages/goatlib:ro
-      - ./data/ducklake:/app/data/ducklake:ro
-    depends_on:
-      - windmill-server
+      - goat-data:/app/data:ro
 
-  # DevContainer for local development
+  # ===========================================================================
+  # Development Environment (profile: dev)
+  # ===========================================================================
+
   goat-dev:
     profiles: [dev]
     build:
@@ -348,11 +351,11 @@ services:
       - redis
       - windmill-server
       - windmill-worker-default
-      - windmill-worker-tools
+      - windmill-worker-tools-dev
     command: sleep infinity
 
   # ===========================================================================
-  # Application Services (profile: prod)
+  # Initialization Services (profile: prod) - run once on startup
   # ===========================================================================
 
   core-migrate:
@@ -364,7 +367,88 @@ services:
     restart: "no"
     command: bash -c "cd apps/core && src/core/scripts/prestart.sh"
 
+  ducklake-init:
+    profiles: [prod]
+    image: ghcr.io/plan4better/goat/windmill-worker-tools:latest
+    build:
+      context: .
+      dockerfile: apps/processes/workers/Dockerfile
+      target: worker-tools
+    container_name: goat-ducklake-init
+    networks:
+      - goat
+    restart: "no"
+    environment:
+      POSTGRES_SERVER: ${POSTGRES_SERVER}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: goat
+      DUCKLAKE_DATA_DIR: /app/data/ducklake
+      DUCKLAKE_CATALOG_SCHEMA: ducklake
+      S3_PROVIDER: ${S3_PROVIDER:-minio}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+    volumes:
+      - ./scripts/db/init-ducklake.py:/app/init-ducklake.py:ro
+      - goat-data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: python /app/init-ducklake.py
+
+  windmill-init:
+    profiles: [prod]
+    image: python:3.11-slim
+    container_name: goat-windmill-init
+    networks:
+      - goat
+    restart: "no"
+    environment:
+      WINDMILL_URL: http://windmill-server:8000
+      WINDMILL_WORKSPACE: goat
+      WINDMILL_ADMIN_EMAIL: ${WINDMILL_ADMIN_EMAIL:-admin@windmill.dev}
+      WINDMILL_ADMIN_PASSWORD: ${WINDMILL_ADMIN_PASSWORD:-changeme}
+      WINDMILL_TOKEN_FILE: /app/data/windmill/.token
+    volumes:
+      - ./scripts/windmill/init-windmill.py:/app/init-windmill.py:ro
+      - goat-data:/app/data
+    depends_on:
+      windmill-server:
+        condition: service_started
+    command: python /app/init-windmill.py
+
+  windmill-sync:
+    profiles: [prod]
+    image: ghcr.io/plan4better/goat/windmill-worker-tools:latest
+    build:
+      context: .
+      dockerfile: apps/processes/workers/Dockerfile
+      target: worker-tools
+    container_name: goat-windmill-sync
+    networks:
+      - goat
+    restart: "no"
+    environment:
+      WINDMILL_URL: http://windmill-server:8000
+      WINDMILL_WORKSPACE: goat
+      WINDMILL_TOKEN_FILE: /app/data/windmill/.token
+    volumes:
+      - goat-data:/app/data:ro
+      - ./scripts/windmill:/app/scripts/windmill:ro
+    depends_on:
+      windmill-init:
+        condition: service_completed_successfully
+    command: /bin/bash /app/scripts/windmill/sync-tools.sh
+
+  # ===========================================================================
+  # Application Services (profile: prod)
+  # ===========================================================================
+
   core:
+    profiles: [prod]
     <<: *service-core
     container_name: goat-core
     networks:
@@ -381,7 +465,7 @@ services:
 
   geoapi:
     profiles: [prod]
-    image: ghcr.io/plan4better/goat/geoapi:2.3.9
+    image: ghcr.io/plan4better/goat/geoapi:latest
     build:
       context: .
       dockerfile: apps/geoapi/Dockerfile
@@ -395,15 +479,16 @@ services:
       <<: *env-core
       TILES_DATA_DIR: /app/data/tiles
     volumes:
-      - ./data/ducklake:/app/data/ducklake:ro
-      - ./data/tiles:/app/data/tiles:ro
+      - goat-data:/app/data:ro
     depends_on:
       db:
         condition: service_healthy
+      ducklake-init:
+        condition: service_completed_successfully
 
   processes:
     profiles: [prod]
-    image: ghcr.io/plan4better/goat/processes:2.3.9
+    image: ghcr.io/plan4better/goat/processes:latest
     build:
       context: .
       dockerfile: apps/processes/Dockerfile
@@ -417,24 +502,27 @@ services:
       <<: *env-core
       WINDMILL_URL: http://windmill-server:8000
       WINDMILL_WORKSPACE: goat
-      WINDMILL_TOKEN: ${WINDMILL_TOKEN}
+      WINDMILL_TOKEN: ${WINDMILL_TOKEN:-}
+      WINDMILL_TOKEN_FILE: /app/data/windmill/.token
       DUCKLAKE_DATA_DIR: /app/data/ducklake
       DUCKLAKE_CATALOG_SCHEMA: ducklake
       TILES_DATA_DIR: /app/data/tiles
       TRAVELTIME_MATRICES_DIR: /app/data/traveltime_matrices
     volumes:
-      - ./data/ducklake:/app/data/ducklake
-      - ./data/tiles:/app/data/tiles
-      - ./data/traveltime_matrices:/app/data/traveltime_matrices:ro
+      - goat-data:/app/data
     depends_on:
       db:
         condition: service_healthy
+      ducklake-init:
+        condition: service_completed_successfully
+      windmill-sync:
+        condition: service_completed_successfully
       windmill-server:
         condition: service_started
 
   web:
     profiles: [prod]
-    image: ghcr.io/plan4better/goat/web:2.3.9
+    image: ghcr.io/plan4better/goat/web:latest
     build:
       context: .
       dockerfile: apps/web/Dockerfile
@@ -460,5 +548,9 @@ services:
       NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN}
       NEXT_PUBLIC_AUTH_DISABLED: ${NEXT_PUBLIC_AUTH_DISABLED}
       NEXT_PUBLIC_ACCOUNTS_DISABLED: ${NEXT_PUBLIC_ACCOUNTS_DISABLED}
+      # Server-only env vars for Edge Runtime middleware (NEXT_PUBLIC_* are inlined at build time)
+      AUTH_DISABLED: ${NEXT_PUBLIC_AUTH_DISABLED}
+      ACCOUNTS_DISABLED: ${NEXT_PUBLIC_ACCOUNTS_DISABLED}
+      ACCOUNTS_API_URL: ${NEXT_PUBLIC_ACCOUNTS_API_URL}
     depends_on:
       - core

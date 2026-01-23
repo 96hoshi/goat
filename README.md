@@ -112,87 +112,95 @@ Make sure the following are installed on your server or local machine:
 - Docker Compose (plugin syntax: `docker compose`)  
 - At least 8 GB RAM recommended
 
+#### Docker Compose Profiles
+
+The `compose.yaml` uses profiles to control which services start:
+
+| Profile | Description |
+|---------|-------------|
+| (none) | Infrastructure only: PostgreSQL, MinIO, Redis, RabbitMQ, Windmill server/worker |
+| `dev` | Infrastructure + devcontainer with local code mounts for development |
+| `prod` | Infrastructure + all production services (core, geoapi, web, processes, workers) |
+
 #### Running GOAT with Docker Compose (recommended for most users)
 
-The default `docker-compose.yml` provisions:
+The `prod` profile provisions:
 
 - PostgreSQL with PostGIS  
-- Keycloak  
 - MinIO (S3 compatible storage)  
+- Redis & RabbitMQ  
+- Windmill (workflow engine for analytics tools)
 - GOAT Core (FastAPI backend)  
 - GOAT GeoAPI (FastAPI backend for geodata)  
+- GOAT Processes (OGC API Processes)
 - GOAT Web (Next.js frontend)
 
 #### 1. Clone the repository
 
-```
+```bash
 git clone https://github.com/plan4better/goat.git
 cd goat
 ```
 
 #### 2. Create your configuration file
 
-Copy `.env`:
+Copy `.env.example` to `.env`:
 
-```
+```bash
 cp .env.example .env
 ```
 
-Update all required environment variables (see “Environment Variables” section below).
+Update environment variables as needed (see "Environment Variables" section below).
 
-#### 3. Pre‑pull all GOAT images (recommended)
+#### 3. Start the GOAT stack
 
-This ensures you always run the latest published versions and avoids building anything locally.
-
-```
-docker compose pull
+```bash
+docker compose --profile prod up -d
 ```
 
-#### 4. Start the GOAT stack
+This will automatically pull the latest images and start all services.
 
-```
-docker compose up -d
-```
+#### 4. Access GOAT
 
-Since images were pulled beforehand, **no build steps will run** — everything starts immediately.
-
-#### 5. Access GOAT
-
-- Web UI: [http://localhost:3000](http://localhost:3000)
-- Core API: [http://localhost:8000/api](http://localhost:8000/api)
-- GeoAPI: [http://localhost:8100](http://localhost:8100)
-- MinIO Console: [http://localhost:9001](http://localhost:9001)
-- Keycloak Admin: [http://localhost:8080](http://localhost:8080)
+| Service | URL |
+|---------|-----|
+| Web UI | [http://localhost:3000](http://localhost:3000) |
+| Core API | [http://localhost:8000/api](http://localhost:8000/api) |
+| GeoAPI | [http://localhost:8100](http://localhost:8100) |
+| Processes API | [http://localhost:8300](http://localhost:8300) |
+| Windmill UI | [http://localhost:8110](http://localhost:8110) |
+| MinIO Console | [http://localhost:9001](http://localhost:9001) |
 
 #### Updating GOAT
 
 To update an existing installation:
 
+```bash
+docker compose --profile prod down
+docker compose --profile prod pull
+docker compose --profile prod up -d
 ```
-docker compose down
-docker compose pull
-docker compose up -d
+
+#### Clean Restart (reset all data)
+
+To completely reset the installation including all data:
+
+```bash
+docker compose --profile prod down
+docker volume rm goat_goat-data
+docker compose --profile prod up -d
 ```
-
-This will:
-
-1. Stop your stack  
-2. Fetch the latest published images  
-3. Restart without rebuilding  
-
-
 
 #### Build Images Locally
 
 If you are developing the GOAT codebase or making changes to `apps/core`, `apps/geoapi`, or `apps/web`, you may need to build images manually.
 
-Run:
-
-```
-docker compose up -d --build
+```bash
+docker compose --profile prod up -d --build
 ```
 
-Only use this if you’re modifying the GOAT source code.
+Only use this if you're modifying the GOAT source code.
+
 
 #### Required Environment Variables
 

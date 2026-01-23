@@ -12,31 +12,25 @@ const publicPaths = ["/map/public"];
 
 export const withOrganization: MiddlewareFactory = (next) => {
   return async (request: NextRequest, _next) => {
-    // Check if auth/accounts are disabled - handle both actual values and unreplaced placeholders
-    const authDisabled = process.env.NEXT_PUBLIC_AUTH_DISABLED;
-    const accountsDisabled = process.env.NEXT_PUBLIC_ACCOUNTS_DISABLED;
-
-    const isAuthDisabled =
-      authDisabled &&
-      authDisabled !== "APP_NEXT_PUBLIC_AUTH_DISABLED" &&
-      authDisabled.toLowerCase() === "true";
-
-    const isAccountsDisabled =
-      accountsDisabled &&
-      accountsDisabled !== "APP_NEXT_PUBLIC_ACCOUNTS_DISABLED" &&
-      accountsDisabled.toLowerCase() === "true";
+    // Check if auth/accounts are disabled using server-only env vars (without NEXT_PUBLIC_ prefix)
+    // IMPORTANT: NEXT_PUBLIC_* vars are inlined at build time and won't work for runtime checks
+    // in Edge Runtime middleware. Use AUTH_DISABLED and ACCOUNTS_DISABLED (server-only) for runtime configuration.
+    const authDisabledEnv = process.env.AUTH_DISABLED;
+    const accountsDisabledEnv = process.env.ACCOUNTS_DISABLED;
+    const isAuthDisabled = authDisabledEnv && authDisabledEnv.toLowerCase() === "true";
+    const isAccountsDisabled = accountsDisabledEnv && accountsDisabledEnv.toLowerCase() === "true";
 
     if (
       isAuthDisabled ||
       isAccountsDisabled ||
       !process.env.NEXTAUTH_URL ||
       !process.env.NEXTAUTH_SECRET ||
-      !process.env.NEXT_PUBLIC_ACCOUNTS_API_URL
+      !process.env.ACCOUNTS_API_URL
     ) {
       return next(request, _next);
     }
 
-    const USERS_API_BASE_URL = new URL("api/v1/users", process.env.NEXT_PUBLIC_ACCOUNTS_API_URL).href;
+    const USERS_API_BASE_URL = new URL("api/v1/users", process.env.ACCOUNTS_API_URL).href;
 
     const { pathname, origin, basePath } = request.nextUrl;
 
